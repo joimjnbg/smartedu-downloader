@@ -93,6 +93,79 @@ function handleResponse(res, resolve, reject, dest, onProgress) {
   ws.on('error', reject);
 }
 
+// ─── DRM key fetcher (Huawei WAF bypass via hidden BrowserWindow) ──────────
+
+async function fetchDrmKey(keyUrl, token) {
+  // Try direct net.fetch first (works if no WAF or simple cookie WAF)
+  try {
+    const h = { 'User-Agent': 'Mozilla/5.0' };
+    if (token) { h['Authorization'] = `Bearer ${token}`; h['X-ND-AUTH'] = `MAC id="${token}",nonce="0",mac="0"`; }
+    const resp = await net.fetch(keyUrl, { method: 'GET', headers: h });
+    if (resp.ok) {
+      const buf = Buffer.from(await resp.arrayBuffer());
+      if (buf.length === 16) return buf;
+    }
+  } catch {}
+
+  // If that fails, use a hidden BrowserWindow to let the WAF JS challenge execute
+  return new Promise((resolve) => {
+    let resolved = false;
+    const win = new BrowserWindow({
+      show: false,
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+
+    const cleanup = () => { if (!resolved) { resolved = true; try { win.close(); } catch {} resolve(null); } };
+
+    // Inject auth headers for all requests to the key domain
+    const filter = { urls: ['https://ndvideo-key.ykt.eduyun.cn/*'] };
+    win.webContents.session.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+      details.requestHeaders['User-Agent'] = 'Mozilla/5.0';
+      if (token) {
+        details.requestHeaders['Authorization'] = `Bearer ${token}`;
+        details.requestHeaders['X-ND-AUTH'] = `MAC id="${token}",nonce="0",mac="0"`;
+      }
+      callback({ requestHeaders: details.requestHeaders });
+    });
+
+    let loadCount = 0;
+    win.webContents.on('did-finish-load', () => {
+      loadCount++;
+      // Wait for WAF JS to execute and page to settle, then fetch via renderer
+      setTimeout(async () => {
+        if (resolved) return;
+        try {
+          const result = await win.webContents.executeJavaScript(`
+            (async () => {
+              try {
+                const r = await fetch('${keyUrl}', { credentials: 'include' });
+                if (!r.ok) return null;
+                const b = await r.arrayBuffer();
+                return Array.from(new Uint8Array(b));
+              } catch(e) { return null; }
+            })();
+          `);
+          if (result && result.length === 16) {
+            resolved = true;
+            win.close();
+            resolve(Buffer.from(result));
+            return;
+          }
+        } catch (e) {}
+        // After 3 load events + 3 attempts, give up
+        if (loadCount >= 3) cleanup();
+      }, 2000);
+    });
+
+    win.webContents.on('did-fail-load', cleanup);
+
+    // Navigate to key server root to trigger WAF challenge
+    win.loadURL('https://ndvideo-key.ykt.eduyun.cn/');
+
+    setTimeout(cleanup, 25000);
+  });
+}
+
 // ─── HLS (m3u8) downloader ──────────────────────────────────────────────────
 
 function downloadBuf(url, headers) {
@@ -137,29 +210,12 @@ async function downloadHls(m3u8Url, destPath, onProgress, token) {
   const keyUrl = keyMatch ? keyMatch[1] : null;
   const iv = ivMatch ? Buffer.from(ivMatch[1], 'hex') : null;
 
-  // If encrypted, try to fetch key via Electron's Chromium network stack
-  // (key server behind Huawei WAF — needs browser-like TLS/cookie handling)
+  // Fetch AES-128 key — key server (ndvideo-key.ykt.eduyun.cn) is behind Huawei WAF
+  // which returns a JS challenge. `net.fetch` can't execute JS, so we use a hidden
+  // BrowserWindow: the WAF JS runs, sets cookies, then we fetch the key via renderer fetch().
   let keyBuf = null;
   if (keyUrl) {
-    try {
-      const resp = await net.fetch(keyUrl, {
-        method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0',
-          ...(token ? { 'Authorization': `Bearer ${token}`, 'X-ND-AUTH': `MAC id="${token}",nonce="0",mac="0"` } : {}),
-        },
-      });
-      if (resp.ok) keyBuf = Buffer.from(await resp.arrayBuffer());
-    } catch {}
-    if (!keyBuf) {
-      try {
-        const resp = await net.fetch(keyUrl, {
-          method: 'GET',
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-        });
-        if (resp.ok) keyBuf = Buffer.from(await resp.arrayBuffer());
-      } catch {}
-    }
+    keyBuf = await fetchDrmKey(keyUrl, token);
   }
 
   // For encrypted streams where key is unavailable, download segments
@@ -344,7 +400,7 @@ function detectType(url) {
 // ─── Resource from relations ────────────────────────────────────────────────
 
 const TYPE_LABELS = {
-  mp4: '视频', m3u8: '视频', avi: '视频', flv: '视频', mov: '视频',
+  mp4: '视频', m3u8: '视频', ts: '视频', avi: '视频', flv: '视频', mov: '视频',
   pdf: '文稿', ppt: '课件', pptx: '课件', doc: '文档', docx: '文档',
   xls: '表格', xlsx: '表格', zip: '压缩包', rar: '压缩包',
 };

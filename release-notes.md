@@ -1,4 +1,8 @@
-## SmartEdu 下载器 v1.2.0
+## SmartEdu 下载器 v1.2.1
+
+### 修复
+
+- **HLS 视频解密**: v1.2.0 尝试用 `net.fetch()` 获取解密密钥，但密钥服务器（ndvideo-key.ykt.eduyun.cn）在华为 WAF 后面，`net.fetch()` 不执行 JavaScript，无法通过 WAF 的 JS Challenge。改用隐藏 `BrowserWindow` 加载页面，让 WAF JS 自动执行并设置 Cookie，再通过渲染进程的 `fetch()` API 获取密钥，成功解密并输出可播放的 `.ts` 文件。
 
 ### 新特性
 

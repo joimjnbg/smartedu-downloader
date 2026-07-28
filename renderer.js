@@ -179,7 +179,7 @@ function renderTree(nodes, container, depth) {
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
       const fmt = (node.format || '').toLowerCase();
-      if (['mp4', 'avi', 'mov', 'flv', 'm3u8'].includes(fmt)) icon.textContent = '🎬';
+      if (['mp4', 'avi', 'mov', 'flv', 'm3u8', 'ts'].includes(fmt)) icon.textContent = '🎬';
       else if (['pdf'].includes(fmt)) icon.textContent = '📄';
       else if (['ppt', 'pptx'].includes(fmt)) icon.textContent = '📊';
       else if (['doc', 'docx'].includes(fmt)) icon.textContent = '📝';
