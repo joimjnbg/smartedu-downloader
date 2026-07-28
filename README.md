@@ -9,13 +9,15 @@
 ## 功能
 
 - **支持多种资源类型** — 教材、同步课程、基础作业、课件、一堂课、实验课、精品课、专题课程、视频
+- **自动发现所有资源** — 自动识别 API 返回的所有资源分类，无需硬编码白名单
 - **树形文件选择** — 自动解析资源结构，勾选需要下载的文件
 - **批量下载** — 保持原目录结构，一次性下载所有选中文件
 - **Access Token** — 设置令牌后可下载受限资源
 - **自动格式适配**
   - 视频（mp4）→ 识别 HLS 流（m3u8），解密合并为 mp4
   - 课件/教案（pptx/docx）→ 识别 PDF 回退，自动标注 `[PDF转换]`
-  - 普通 pdf/doc 等直接下载
+  - 图片/音频 → 支持 jpg/png/gif/mp3/wav/aac 等格式
+- **质量优先** — HLS 流按 `href-m3u8` > `href-hd-m3u8` > `href-1080p` > `href-720p` > ... > `href` 优先级下载最高画质
 
 ## 截图
 
@@ -104,11 +106,14 @@ npm run build:linux-x64    # Linux x64
 
 ```
 smartedu-downloader/
-├── main.js          # Electron 主进程（URL解析、下载、Token管理）
+├── main.js          # Electron 主进程（IPC路由、下载逻辑、Token管理）
+├── lib.js           # 纯逻辑层（URL检测、资源提取、关系解析 — 可脱离Electron测试）
 ├── renderer.js      # 渲染进程（UI、树形选择、下载进度）
 ├── preload.js       # 预加载桥接（IPC通信）
 ├── index.html       # 界面布局
 ├── package.json     # 项目配置
+├── tdd-logic.js     # 逻辑层单元测试（82项）
+├── tdd-suite.js     # HLS AES-128 解密集成测试（20项）
 └── icon.png         # 应用图标
 ```
 
@@ -116,23 +121,26 @@ smartedu-downloader/
 
 1. 粘贴 URL → `detectType()` 识别资源类型
 2. 调用对应 API 端点获取 JSON 数据
-3. 解析 `ti_items` 中的资源项，提取下载 URL
-4. 构建资源树 → 用户勾选 → 批量下载
-5. 下载时重试机制：先尝试无认证请求，若 401/403 则使用 Token 重试
+3. 解析 `ti_items` 中的资源项，提取下载 URL（按质量优先级排序）
+4. 解析 `relations` 中的关系资源（自动发现所有分类，无需硬编码白名单）
+5. 构建资源树 → 用户勾选 → 批量下载
+6. 下载时重试机制：先尝试无认证请求，若 401/403 则使用 Token 重试
 
 ### 支持的 URL 类型
 
-| URL 匹配规则 | 类型 | API 端点 |
-|-------------|------|---------|
-| `/tchMaterial/detail` | 教材 | `s-file-1/special_edu/resources/details` |
-| `/syncClassroom/classActivity` | 课程活动 | `s-file-2/national_lesson/resources/details` |
-| `/syncClassroom/prepare/detail?resourceId` | 课件 | `s-file-2/prepare_sub_type/resources/details` |
-| `/syncClassroom/prepare/detail?lessonId` | 一堂课 | `s-file-1/prepare_lesson/resources/details` |
-| `/syncClassroom/experimentLesson` | 实验课 | `s-file-1/experiment/resources/details` |
-| `/syncClassroom/basicWork/detail` | 基础作业 | `s-file-1/special_edu/resources/details` |
-| `/qualityCourse` | 精品课 | `s-file-1/elite_lesson/resources` |
-| `/schoolService/detail?thematic_course` | 专题课程 | `s-file-1/special_edu/thematic_course` |
-| `/sedu/detail` 或 `/wisdom/detail` | 视频 | `s-file-1/special_edu/resources/details` |
+| URL 路径 | 类型 | 识别的参数 | API 端点 |
+|---------|------|-----------|---------|
+| `/tchMaterial/detail` | 教材 | `contentId` | `s-file-1/tch_material/details` |
+| `/syncClassroom/classActivity` | 课程活动 | `activityId` | `s-file-2/national_lesson/resources/details` |
+| `/syncClassroom/prepare/detail` | 课件 | `resourceId` | `s-file-2/prepare_sub_type/resources/details` |
+| `/syncClassroom/prepare/detail` | 一堂课 | `lessonId` | `s-file-1/prepare_lesson/resources/details` |
+| `/syncClassroom/experimentLesson` | 实验课 | `courseId` | `s-file-1/experiment/resources/details` |
+| `/syncClassroom/basicWork/detail` | 基础作业 | `contentId` | `s-file-1/special_edu/resources/details` |
+| `/qualityCourse` | 精品课 | `courseId` | `s-file-1/elite_lesson/resources` |
+| `/schoolService/detail` | 专题课程 | `thematic_course` + `contentId` | `s-file-1/special_edu/thematic_course` |
+| `/sedu/detail` 或 `/wisdom/detail` | 视频 | `contentId` | `s-file-1/special_edu/resources/details` |
+
+> 从 v1.3.0 开始，URL 路径采用 `URL API` 精确匹配参数，不再依赖字符串 `includes()`，彻底避免了因参数顺序或路径片段导致的误识别。
 
 ## 注意事项
 

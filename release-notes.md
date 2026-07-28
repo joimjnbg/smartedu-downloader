@@ -1,3 +1,30 @@
+## SmartEdu 下载器 v1.3.0
+
+### 新特性
+
+- **自动发现所有资源分类**: `parseRelationResources` 不再依赖硬编码白名单 —— 当未指定 relationKeys 时，自动使用 API 返回的全部字段作为资源分类，新增的资源类型不再被静默丢弃。
+- **URL 检测重写**: 改用 `URL API` 精确解析路径和参数，`?lessonId=xxx&resourceId=yyy` 等参数顺序不再影响识别；路径片段 `tchMaterial` 不再误匹配无关 URL。
+- **HLS 画质优先级优化**: 新增 `href-hd-m3u8`、`href-sd-m3u8`、`href-1080p-m3u8` 质量标记，按 `href-m3u8` > `href-hd-m3u8` > `href-1080p` > `href-720p` > ... > `href` 顺序下载最高可用画质。
+- **图片/音频支持**: `TYPE_LABELS` 新增 jpg/png/gif/mp3/wav/aac/flac/ogg/svg/webp/7z 等格式标签。
+- **降级兜底**: basicWork、courseware、video、thematicCourse 等单资源处理器在 `ti_items` 无结果时自动尝试 `relations` 中的全部分类。
+- **专题课程增强**: 不再仅筛选 `assets_document`，支持专题课程中包含的所有资源类型。
+- **代码分层**: 纯逻辑函数提取到 `lib.js`，可脱离 Electron 独立测试。
+
+### 测试
+
+- 新增 `tdd-logic.js` 单元测试套件，覆盖 URL 检测、资源提取、关系解析、工具函数等 82 项测试，全部通过。
+- 原有 HLS AES-128 解密测试（`tdd-suite.js`，20 项）持续通过。
+
+### 文件变更
+
+| 文件 | 变更 |
+|------|------|
+| `lib.js` | **新增**：纯逻辑层（URL检测、资源提取、关系解析） |
+| `tdd-logic.js` | **新增**：逻辑层单元测试（82项） |
+| `main.js` | 重构：移除重复函数，委托 `lib.js`；所有 handler 使用自动发现；新增 relations 降级兜底 |
+| `package.json` | 版本升至 1.3.0；构建清单添加 `lib.js` |
+| `README.md` | 更新功能列表、项目结构、URL 类型表 |
+
 ## SmartEdu 下载器 v1.2.1
 
 ### 修复

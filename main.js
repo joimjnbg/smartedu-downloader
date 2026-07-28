@@ -4,6 +4,7 @@ const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const crypto = require('crypto');
+const lib = require('./lib');
 
 let mainWindow;
 let accessToken = '';
@@ -314,146 +315,15 @@ app.whenReady().then(() => { loadToken(); createWindow(); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Delegated helpers ──────────────────────────────────────────────────────
+// Pure-logic functions are in lib.js (testable without Electron)
 
-function getUrlParam(u, name) {
-  try { return new URL(u).searchParams.get(name); } catch { return null; }
-}
-
-function sanitize(s) {
-  return s.replace(/[/\\:*?"<>|]/g, '_').trim() || '未命名';
-}
-
-function fixCsPath(s) {
-  for (const p of ['cs_path:${ref-path}', 'cs_path:${ref_path}']) {
-    if (s.startsWith(p)) return s.replace(p, 'https://r1-ndr.ykt.cbern.com.cn');
-  }
-  if (s.startsWith('cs_path:')) return s.replace('cs_path:', 'https://r1-ndr.ykt.cbern.com.cn');
-  return s;
-}
-
-function getStorageUrl(item) {
-  if (item.ti_storages && item.ti_storages.length > 0) {
-    return item.ti_storages[0];
-  }
-  if (item.ti_storage) return fixCsPath(item.ti_storage);
-  return null;
-}
-
-function extractUrl(tiItems, preferredFormat, size) {
-  if (!tiItems) return null;
-
-  // Priority 1: source file matching preferredFormat
-  for (const item of tiItems) {
-    if (item.ti_is_source_file && item.ti_format === preferredFormat && (!size || item.ti_size == size)) {
-      const url = getStorageUrl(item);
-      if (url) return { url, format: preferredFormat };
-    }
-  }
-
-  // Priority 2: m3u8 HLS streams (for mp4/m3u8 requests)
-  if (preferredFormat === 'mp4' || preferredFormat === 'm3u8') {
-    for (const flag of ['href-m3u8', 'href-720p-m3u8', 'href-480p-m3u8', 'href', 'href-360p-m3u8']) {
-      for (const item of tiItems) {
-        if (item.ti_file_flag === flag) {
-          const url = getStorageUrl(item);
-          if (url) {
-            const enc = item.custom_properties && item.custom_properties.encryption;
-            return { url, format: 'm3u8', encrypted: enc === 'drm' || enc === true };
-          }
-        }
-      }
-    }
-  }
-
-  // Priority 3: match by size for non-mp4
-  if (preferredFormat !== 'mp4' && preferredFormat !== 'm3u8') {
-    for (const item of tiItems) {
-      if (item.ti_size == size && item.ti_storage) {
-        return { url: fixCsPath(item.ti_storage), format: item.ti_format || preferredFormat };
-      }
-    }
-  }
-
-  // Priority 4: PDF fallback (server converts pptx/docx to PDF)
-  if (preferredFormat !== 'mp4' && preferredFormat !== 'm3u8' && preferredFormat !== 'pdf') {
-    for (const item of tiItems) {
-      if (item.ti_format === 'pdf') {
-        const url = getStorageUrl(item);
-        if (url) return { url, format: 'pdf' };
-      }
-    }
-  }
-
-  return null;
-}
-
-function makeFileNode(name, format, actualFormat, url, size) {
-  const useFmt = actualFormat || format;
-  const ext = useFmt ? `.${useFmt}` : '';
-  const finalName = name.endsWith(ext) ? name : `${name}${ext}`;
-  // Tag PDF conversions so user knows
-  let displayName = finalName;
-  if (actualFormat && actualFormat !== format && format && actualFormat === 'pdf') {
-    const base = finalName.replace(/\.pdf$/, '');
-    displayName = `${base}[PDF转换].pdf`;
-  }
-  return { name: displayName, format: useFmt || '', originalFormat: format || '', url: url || '', size: size || 0 };
-}
-
-// ─── URL type detection ─────────────────────────────────────────────────────
-
-function detectType(url) {
-  if (url.includes('/tchMaterial/detail')) return 'textbook';
-  if (url.includes('/syncClassroom/classActivity')) return 'classActivity';
-  if (url.includes('/syncClassroom/prepare/detail?resourceId')) return 'courseware';
-  if (url.includes('/syncClassroom/prepare/detail?lessonId')) return 'oneTeacher';
-  if (url.includes('/syncClassroom/experimentLesson')) return 'experiment';
-  if (url.includes('/syncClassroom/basicWork/detail')) return 'basicWork';
-  if (url.includes('/qualityCourse')) return 'qualityCourse';
-  if (url.includes('/schoolService/detail') && url.includes('thematic_course')) return 'thematicCourse';
-  if (url.includes('/sedu/detail') || url.includes('/wisdom/detail')) return 'video';
-  return 'unknown';
-}
-
-// ─── Resource from relations ────────────────────────────────────────────────
-
-const TYPE_LABELS = {
-  mp4: '视频', m3u8: '视频', ts: '视频', avi: '视频', flv: '视频', mov: '视频',
-  pdf: '文稿', ppt: '课件', pptx: '课件', doc: '文档', docx: '文档',
-  xls: '表格', xlsx: '表格', zip: '压缩包', rar: '压缩包',
-};
-
-function parseRelationResources(relations, relationKeys, labelMap) {
-  const tree = [];
-  for (const key of relationKeys) {
-    const items = relations[key];
-    if (!items || !items.length) continue;
-    const folderName = labelMap[key] || key;
-    const children = [];
-    const seen = new Set();
-    for (const item of items) {
-      const gt = item.global_title || {};
-      const cn = gt['zh-CN'] || '';
-      const st = item.title || '';
-      const cp = item.custom_properties || {};
-      const format = cp.format || '';
-      const size = cp.size || 0;
-      const info = extractUrl(item.ti_items, format, size);
-      if (!info) continue;
-      const actualFormat = info.format;
-      const typeLabel = TYPE_LABELS[actualFormat] || actualFormat.toUpperCase();
-      const typeSuffix = cn ? `[${typeLabel}]` : '';
-      let baseName = cn ? (st && st !== cn ? `${cn} - ${st}` : cn) : (st || '未命名');
-      let name = `${sanitize(baseName)}${typeSuffix}`;
-      if (seen.has(name)) name = `${sanitize(baseName)}${typeSuffix}_2`;
-      seen.add(name);
-      children.push(makeFileNode(name, format, actualFormat, info.url, size));
-    }
-    if (children.length) tree.push({ name: folderName, type: 'folder', children });
-  }
-  return tree;
-}
+const getUrlParam = lib.getUrlParam;
+const sanitize = lib.sanitize;
+const detectType = lib.detectType;
+const extractUrl = lib.extractUrl;
+const makeFileNode = lib.makeFileNode;
+const parseRelationResources = lib.parseRelationResources;
 
 // ─── URL Handlers ──────────────────────────────────────────────────────────
 
@@ -462,10 +332,19 @@ async function handleBasicWork(url) {
   if (!contentId) throw new Error('未找到 contentId');
   const data = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/resources/details/${contentId}.json`);
   const title = data.title || '未命名';
+
+  // Try top-level ti_items first
   const cp = data.custom_properties || {};
   const format = cp.format || 'pdf';
   const size = cp.size || 0;
-  const info = extractUrl(data.ti_items, format, size);
+  let info = extractUrl(data.ti_items, format, size);
+
+  // Fallback: try relations (auto-discover all keys)
+  if (!info && data.relations) {
+    const tree = parseRelationResources(data.relations, null, {});
+    if (tree.length) return { title: sanitize(title), tree };
+  }
+
   if (!info) throw new Error('未找到可下载的资源');
   return { title, tree: [makeFileNode(sanitize(title), format, info.format, info.url, size)] };
 }
@@ -492,8 +371,12 @@ async function handleClassActivity(url) {
   const tlist = data.teacher_list || [];
   const teacherName = tlist.length ? tlist[0].name || '' : '';
   const prefix = teacherName ? `[${sanitize(teacherName)}]` : '';
-  const tree = parseRelationResources(relations, ['national_course_resource'], {
-    national_course_resource: '课程资源'
+  // Auto-discover all relation keys (not just national_course_resource)
+  const tree = parseRelationResources(relations, null, {
+    national_course_resource: '课程资源',
+    lesson_plan_design: '教学设计',
+    classroom_record: '课堂实录',
+    teaching_assets: '教学资源',
   });
   return { title: prefix + sanitize(title), tree };
 }
@@ -506,7 +389,16 @@ async function handleCourseware(url) {
   const cp = data.custom_properties || {};
   const format = cp.format || '';
   const size = cp.size || 0;
-  const info = extractUrl(data.ti_items, format, size);
+
+  // Try top-level ti_items first
+  let info = extractUrl(data.ti_items, format, size);
+
+  // Fallback: try relations
+  if (!info && data.relations) {
+    const tree = parseRelationResources(data.relations, null, {});
+    if (tree.length) return { title: sanitize(title), tree };
+  }
+
   if (!info) throw new Error('未找到可下载的资源');
   return { title, tree: [makeFileNode(sanitize(title), format, info.format, info.url, size)] };
 }
@@ -520,10 +412,10 @@ async function handleOneTeacher(url) {
   const tlist = data.teacher_list || [];
   const teacherName = tlist.length ? tlist[0].name || '' : '';
   const prefix = teacherName ? `[${sanitize(teacherName)}]` : '';
-  const tree = parseRelationResources(relations,
-    ['lesson_plan_design', 'classroom_record', 'teaching_assets'],
-    { lesson_plan_design: '教学设计', classroom_record: '课堂实录', teaching_assets: '教学资源' }
-  );
+  // Auto-discover all relation keys
+  const tree = parseRelationResources(relations, null, {
+    lesson_plan_design: '教学设计', classroom_record: '课堂实录', teaching_assets: '教学资源',
+  });
   return { title: prefix + sanitize(title), tree };
 }
 
@@ -536,10 +428,10 @@ async function handleExperiment(url) {
   const tlist = data.teacher_list || [];
   const teacherName = tlist.length ? tlist[0].name || '' : '';
   const prefix = teacherName ? `[${sanitize(teacherName)}]` : '';
-  const tree = parseRelationResources(relations,
-    ['lesson_1', 'experiment_video'],
-    { lesson_1: '课程内容', experiment_video: '实验视频' }
-  );
+  // Auto-discover all relation keys
+  const tree = parseRelationResources(relations, null, {
+    lesson_1: '课程内容', experiment_video: '实验视频',
+  });
   return { title: prefix + sanitize(title), tree };
 }
 
@@ -552,35 +444,51 @@ async function handleQualityCourse(url) {
   const data = await fetchJson(apiUrl);
   const title = data.title || '未命名';
   const relations = data.relations || {};
-  const tree = parseRelationResources(relations, ['course_resource'], { course_resource: '课程资源' });
+  // Auto-discover all relation keys
+  const tree = parseRelationResources(relations, null, { course_resource: '课程资源' });
   return { title: sanitize(title), tree };
 }
 
 async function handleThematicCourse(url) {
   const contentId = getUrlParam(url, 'contentId');
   if (!contentId) throw new Error('未找到 contentId');
+  let foundTitle = '专题课程';
+
+  // First try: fetch as single resource
   try {
     const data = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/resources/details/${contentId}.json`);
-    const title = data.title || '未命名';
+    foundTitle = data.title || foundTitle;
     const cp = data.custom_properties || {};
     const format = cp.format || '';
     const size = cp.size || 0;
+
+    // Try relations first (for multi-resource)
+    if (data.relations) {
+      const tree = parseRelationResources(data.relations, null, {});
+      if (tree.length) return { title: sanitize(foundTitle), tree };
+    }
+
+    // Fallback to top-level ti_items
     const info = extractUrl(data.ti_items, format, size);
-    if (info) return { title, tree: [makeFileNode(sanitize(title), format, info.format, info.url, size)] };
+    if (info) return { title: sanitize(foundTitle), tree: [makeFileNode(sanitize(foundTitle), format, info.format, info.url, size)] };
   } catch {}
-  const list = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/thematic_course/${contentId}/resources/list.json`);
-  const children = [];
-  for (const item of list) {
-    if (item.resource_type_code !== 'assets_document') continue;
-    const title = item.title || '未命名';
-    const cp = item.custom_properties || {};
-    const format = cp.format || 'pdf';
-    const size = cp.size || 0;
-    const info = extractUrl(item.ti_items, format, size);
-    if (info) children.push(makeFileNode(sanitize(title), format, info.format, info.url, size));
-  }
-  if (!children.length) throw new Error('未找到可下载的文档资源');
-  return { title: '专题课程', tree: children };
+
+  // Second try: list endpoint (for thematic courses with multiple resources)
+  try {
+    const list = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/thematic_course/${contentId}/resources/list.json`);
+    const children = [];
+    for (const item of list) {
+      const title = item.title || '未命名';
+      const cp = item.custom_properties || {};
+      const format = cp.format || 'pdf';
+      const size = cp.size || 0;
+      const info = extractUrl(item.ti_items, format, size);
+      if (info) children.push(makeFileNode(sanitize(title), format, info.format, info.url, size));
+    }
+    if (children.length) return { title: sanitize(foundTitle), tree: children };
+  } catch {}
+
+  throw new Error('未找到可下载的资源');
 }
 
 async function handleVideo(url) {
@@ -595,7 +503,16 @@ async function handleVideo(url) {
   const cp = data.custom_properties || {};
   const format = cp.format || 'mp4';
   const size = cp.size || 0;
-  const info = extractUrl(data.ti_items, format, size);
+
+  // Try top-level ti_items first
+  let info = extractUrl(data.ti_items, format, size);
+
+  // Fallback: try relations (for multi-video resources)
+  if (!info && data.relations) {
+    const tree = parseRelationResources(data.relations, null, {});
+    if (tree.length) return { title: sanitize(title), tree };
+  }
+
   if (!info) throw new Error('未找到可下载的视频');
   return { title, tree: [makeFileNode(sanitize(title), format, info.format, info.url, size)] };
 }
