@@ -93,10 +93,14 @@ function handleResponse(res, resolve, reject, dest, onProgress) {
   ws.on('error', reject);
 }
 
-// ─── DRM key fetcher (Huawei WAF bypass via hidden BrowserWindow) ──────────
+// ─── DRM key fetcher ────────────────────────────────────────────────────────
+// Key server (ndvideo-key.ykt.eduyun.cn) is behind Huawei WAF that returns
+// a JS challenge. We bypass it by having a real BrowserWindow execute the JS:
+//   1. Load root URL in hidden iframe inside main window → WAF JS runs → cookies set
+//   2. Then fetch the key URL from the same renderer (cookies attached)
 
 async function fetchDrmKey(keyUrl, token) {
-  // Try direct net.fetch first (works if no WAF or simple cookie WAF)
+  // Quick path: try direct net.fetch first (works if WAF is absent or simple)
   try {
     const h = { 'User-Agent': 'Mozilla/5.0' };
     if (token) { h['Authorization'] = `Bearer ${token}`; h['X-ND-AUTH'] = `MAC id="${token}",nonce="0",mac="0"`; }
@@ -107,62 +111,59 @@ async function fetchDrmKey(keyUrl, token) {
     }
   } catch {}
 
-  // If that fails, use a hidden BrowserWindow to let the WAF JS challenge execute
-  return new Promise((resolve) => {
-    let resolved = false;
-    const win = new BrowserWindow({
-      show: false,
-      webPreferences: { nodeIntegration: false, contextIsolation: true },
-    });
+  // Main path: use the visible main window's renderer (real browser context)
+  // The WAF JS challenge executes in the iframe, sets cookies in the shared
+  // session, then a second fetch() goes through WAF and returns the key.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const KEY_ROOT = 'https://ndvideo-key.ykt.eduyun.cn';
+    const script = `
+      (async () => {
+        // Step 1: load key-server root in hidden iframe → triggers WAF JS
+        const f = document.createElement('iframe');
+        f.style.display = 'none';
+        f.src = '${KEY_ROOT}/';
+        document.body.appendChild(f);
+        await new Promise(r => { f.onload = r; setTimeout(r, 8000); });
 
-    const cleanup = () => { if (!resolved) { resolved = true; try { win.close(); } catch {} resolve(null); } };
-
-    // Inject auth headers for all requests to the key domain
-    const filter = { urls: ['https://ndvideo-key.ykt.eduyun.cn/*'] };
-    win.webContents.session.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
-      details.requestHeaders['User-Agent'] = 'Mozilla/5.0';
-      if (token) {
-        details.requestHeaders['Authorization'] = `Bearer ${token}`;
-        details.requestHeaders['X-ND-AUTH'] = `MAC id="${token}",nonce="0",mac="0"`;
-      }
-      callback({ requestHeaders: details.requestHeaders });
-    });
-
-    let loadCount = 0;
-    win.webContents.on('did-finish-load', () => {
-      loadCount++;
-      // Wait for WAF JS to execute and page to settle, then fetch via renderer
-      setTimeout(async () => {
-        if (resolved) return;
+        // Step 2: now fetch the real key URL (cookies from WAF are attached)
         try {
-          const result = await win.webContents.executeJavaScript(`
-            (async () => {
-              try {
-                const r = await fetch('${keyUrl}', { credentials: 'include' });
-                if (!r.ok) return null;
-                const b = await r.arrayBuffer();
-                return Array.from(new Uint8Array(b));
-              } catch(e) { return null; }
-            })();
-          `);
-          if (result && result.length === 16) {
-            resolved = true;
-            win.close();
-            resolve(Buffer.from(result));
-            return;
-          }
-        } catch (e) {}
-        // After 3 load events + 3 attempts, give up
-        if (loadCount >= 3) cleanup();
-      }, 2000);
+          const resp = await fetch('${keyUrl}', { credentials: 'include' });
+          if (!resp.ok) return null;
+          const buf = await resp.arrayBuffer();
+          return Array.from(new Uint8Array(buf));
+        } catch(e) { return null; }
+      })();
+    `;
+    try {
+      const result = await mainWindow.webContents.executeJavaScript(script);
+      if (result && result.length === 16) return Buffer.from(result);
+    } catch {}
+  }
+
+  // Last resort: hidden BrowserWindow fallback (for edge cases)
+  return new Promise((resolve) => {
+    let done = false;
+    const cleanup = () => { if (!done) { done = true; try { w.close(); } catch {} resolve(null); } };
+    const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
+    const filter = { urls: ['https://ndvideo-key.ykt.eduyun.cn/*'] };
+    w.webContents.session.webRequest.onBeforeSendHeaders(filter, (d, cb) => {
+      d.requestHeaders['User-Agent'] = 'Mozilla/5.0';
+      if (token) { d.requestHeaders['Authorization'] = `Bearer ${token}`; d.requestHeaders['X-ND-AUTH'] = `MAC id="${token}",nonce="0",mac="0"`; }
+      cb({ requestHeaders: d.requestHeaders });
     });
-
-    win.webContents.on('did-fail-load', cleanup);
-
-    // Navigate to key server root to trigger WAF challenge
-    win.loadURL('https://ndvideo-key.ykt.eduyun.cn/');
-
-    setTimeout(cleanup, 25000);
+    w.webContents.on('did-finish-load', () => {
+      setTimeout(async () => {
+        if (done) return;
+        try {
+          const r = await w.webContents.executeJavaScript(`fetch('${keyUrl}',{credentials:'include'}).then(r=>r.ok?r.arrayBuffer():null).then(b=>b?Array.from(new Uint8Array(b)):null)`);
+          if (r && r.length === 16) { done = true; w.close(); resolve(Buffer.from(r)); return; }
+        } catch {}
+        cleanup();
+      }, 3000);
+    });
+    w.webContents.on('did-fail-load', cleanup);
+    w.loadURL('https://ndvideo-key.ykt.eduyun.cn/');
+    setTimeout(cleanup, 20000);
   });
 }
 
@@ -289,6 +290,24 @@ function createWindow() {
     icon: path.join(__dirname, 'icon.png'),
   });
   mainWindow.loadFile('index.html');
+
+  // Set up CORS bypass + auth headers for the key-server domain so the
+  // renderer's fetch() can reach it (renderer origin is file://, which is
+  // cross-origin).
+  const keyFilter = { urls: ['https://ndvideo-key.ykt.eduyun.cn/*'] };
+  mainWindow.webContents.session.webRequest.onBeforeSendHeaders(keyFilter, (details, callback) => {
+    details.requestHeaders['User-Agent'] = 'Mozilla/5.0';
+    if (accessToken) {
+      details.requestHeaders['Authorization'] = `Bearer ${accessToken}`;
+      details.requestHeaders['X-ND-AUTH'] = `MAC id="${accessToken}",nonce="0",mac="0"`;
+    }
+    callback({ requestHeaders: details.requestHeaders });
+  });
+  mainWindow.webContents.session.webRequest.onHeadersReceived(keyFilter, (details, callback) => {
+    details.responseHeaders['Access-Control-Allow-Origin'] = ['null'];
+    details.responseHeaders['Access-Control-Allow-Credentials'] = ['true'];
+    callback({ responseHeaders: details.responseHeaders });
+  });
 }
 
 app.whenReady().then(() => { loadToken(); createWindow(); });
