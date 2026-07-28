@@ -23,14 +23,16 @@
 
 ## 下载
 
-从 [Releases](https://github.com/joimjnbg/smartedu-downloader/releases) 页面下载对应平台的最新版本。
+从 [Releases](https://github.com/joimjnbg/smartedu-downloader/releases) 页面下载最新版本。
 
-| 平台 | 文件 |
-|------|------|
-| Windows x64 | `SmartEdu下载器-win-x64.exe`（便携版）|
-| macOS x64 | `SmartEdu下载器-mac-x64.zip` |
-| macOS ARM (M1/M2) | `SmartEdu下载器-mac-arm64.zip` |
-| Linux x64 | `SmartEdu下载器-linux-x64.AppImage` |
+| 平台 | 文件 | 说明 |
+|------|------|------|
+| Windows x64 | `SmartEdu下载器-win-x64.exe` | 便携版，无需安装，双击直接运行 |
+| macOS x64 | 需从源码构建 | `npm run build:mac-x64` |
+| macOS ARM | 需从源码构建 | `npm run build:mac-arm64` |
+| Linux x64 | 需从源码构建 | `npm run build:linux-x64` |
+
+> 目前仅提供 Windows 预编译版本。其他平台用户请参考「从源码构建」章节自行编译。
 
 ## 快速开始
 
@@ -81,7 +83,7 @@ npm install
 npm start
 
 # 构建分发版
-npm run build:win-x64      # Windows x64 便携版
+npm run build:win-x64      # Windows x64 便携版（输出到 dist/）
 npm run build:mac-x64      # macOS Intel
 npm run build:mac-arm64    # macOS Apple Silicon
 npm run build:linux-x64    # Linux x64
@@ -89,11 +91,11 @@ npm run build:linux-x64    # Linux x64
 
 ### 构建脚本
 
-| 命令 | 产物 |
-|------|------|
-| `npm run build:win-x64` | Windows x64 便携 exe |
-| `npm run build:mac-arm64` | macOS ARM (M系列) zip |
-| `npm run build:linux-x64` | Linux AppImage |
+| 命令 | 产物 | 输出路径 |
+|------|------|---------|
+| `npm run build:win-x64` | Windows x64 便携 exe | `dist/SmartEdu下载器-win-x64.exe` |
+| `npm run build:mac-arm64` | macOS ARM (M系列) zip | `dist/SmartEdu下载器-mac-arm64.zip` |
+| `npm run build:linux-x64` | Linux AppImage | `dist/SmartEdu下载器-linux-x64.AppImage` |
 
 ## 项目结构
 
