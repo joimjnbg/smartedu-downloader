@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, net } = require('electron');
 const path = require('path');
 const https = require('https');
 const http = require('http');
@@ -137,11 +137,29 @@ async function downloadHls(m3u8Url, destPath, onProgress, token) {
   const keyUrl = keyMatch ? keyMatch[1] : null;
   const iv = ivMatch ? Buffer.from(ivMatch[1], 'hex') : null;
 
-  // If encrypted, try to fetch key
+  // If encrypted, try to fetch key via Electron's Chromium network stack
+  // (key server behind Huawei WAF — needs browser-like TLS/cookie handling)
   let keyBuf = null;
   if (keyUrl) {
-    try { keyBuf = await downloadBuf(keyUrl, headers(usedAuth)); } catch {}
-    if (!keyBuf) { try { keyBuf = await downloadBuf(keyUrl, headers(false)); } catch {} }
+    try {
+      const resp = await net.fetch(keyUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          ...(token ? { 'Authorization': `Bearer ${token}`, 'X-ND-AUTH': `MAC id="${token}",nonce="0",mac="0"` } : {}),
+        },
+      });
+      if (resp.ok) keyBuf = Buffer.from(await resp.arrayBuffer());
+    } catch {}
+    if (!keyBuf) {
+      try {
+        const resp = await net.fetch(keyUrl, {
+          method: 'GET',
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+        });
+        if (resp.ok) keyBuf = Buffer.from(await resp.arrayBuffer());
+      } catch {}
+    }
   }
 
   // For encrypted streams where key is unavailable, download segments
@@ -165,12 +183,7 @@ async function downloadHls(m3u8Url, destPath, onProgress, token) {
       if (onProgress) onProgress(i + 1, total);
     }
     const merged = Buffer.concat(allSegments);
-    // Save as .ts (change extension from .m3u8 to .ts)
-    const tsPath = destPath.replace(/\.m3u8$/i, '.ts');
-    fs.writeFileSync(tsPath, merged);
-    if (fs.existsSync(destPath) && destPath !== tsPath) {
-      try { fs.unlinkSync(destPath); } catch {}
-    }
+    fs.writeFileSync(destPath, merged);
     return;
   }
 
@@ -202,11 +215,9 @@ async function downloadHls(m3u8Url, destPath, onProgress, token) {
     if (onProgress) onProgress(i + 1, total);
   }
 
-  // Save as .mp4 (decrypted or no encryption)
-  const mp4Path = destPath.replace(/\.ts$/i, '.mp4').replace(/\.m3u8$/i, '.mp4');
+  // Save as .ts (H.264/AAC in MPEG-TS container — plays in VLC/PotPlayer/ffplay)
   const merged = Buffer.concat(allSegments);
-  fs.writeFileSync(mp4Path, merged);
-  if (fs.existsSync(destPath) && destPath !== mp4Path) { try { fs.unlinkSync(destPath); } catch {} }
+  fs.writeFileSync(destPath, merged);
 }
 
 // ─── Window ─────────────────────────────────────────────────────────────────
@@ -578,10 +589,8 @@ ipcMain.handle('download-files', async (event, { files }) => {
             });
           }
         }, accessToken);
-        // downloadHls saves as .ts (encrypted) or .mp4 (decrypted)
-        const mp4Dest = basePath + '.mp4';
-        const finalPath = fs.existsSync(mp4Dest) ? mp4Dest : (fs.existsSync(hlsDest) ? hlsDest : filePath);
-        results.push({ name: path.basename(finalPath), success: true, path: finalPath });
+        // downloadHls saves as .ts (always — decrypted or encrypted)
+        results.push({ name: path.basename(hlsDest), success: true, path: hlsDest });
       } else {
         await new Promise((resolve, reject) => {
           downloadWithAuth(file.url, filePath, (downloaded, total) => {
@@ -595,8 +604,8 @@ ipcMain.handle('download-files', async (event, { files }) => {
             }
           }).then(resolve).catch(reject);
         });
+        results.push({ name: path.basename(filePath), success: true, path: filePath });
       }
-      results.push({ name: path.basename(filePath), success: true, path: filePath });
     } catch (e) {
       results.push({ name: file.name, success: false, error: e.message });
     }
