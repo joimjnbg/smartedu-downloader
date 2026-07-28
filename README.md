@@ -95,9 +95,10 @@ npm run build:linux-x64    # Linux x64
 | 命令 | 产物 | 输出路径 |
 |------|------|---------|
 | `npx electron-builder --win portable --x64 --ia32` | Windows x64 + x86 便携版 | `dist/SmartEdu下载器-win-x64.exe` + `dist/SmartEdu下载器-win-ia32.exe` |
-| `npm run build:win-x64` | Windows x64 便携版 | `dist/SmartEdu下载器-win-x64.exe` |
-| `npm run build:mac-arm64` | macOS ARM (M系列) zip | `dist/SmartEdu下载器-mac-arm64.zip` |
-| `npm run build:linux-x64` | Linux AppImage | `dist/SmartEdu下载器-linux-x64.AppImage` |
+| `npx electron-builder --win portable --x64 --ia32` | Windows x64 + x86 便携版 | `out/SmartEdu下载器-win-x64.exe` + `out/SmartEdu下载器-win-ia32.exe` |
+| `npm run build:win-x64` | Windows x64 便携版 | `out/SmartEdu下载器-win-x64.exe` |
+| `npm run build:mac-arm64` | macOS ARM (M系列) zip | `out/SmartEdu下载器-mac-arm64.zip` |
+| `npm run build:linux-x64` | Linux AppImage | `out/SmartEdu下载器-linux-x64.AppImage` |
 
 ## 项目结构
 

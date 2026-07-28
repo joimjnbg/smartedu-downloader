@@ -144,11 +144,33 @@ async function downloadHls(m3u8Url, destPath, onProgress, token) {
     if (!keyBuf) { try { keyBuf = await downloadBuf(keyUrl, headers(false)); } catch {} }
   }
 
-  // For encrypted streams where key is unavailable, save only the m3u8
-  // (browser with session cookies can play it)
+  // For encrypted streams where key is unavailable, download segments
+  // and concatenate into .ts file (data preserved, can be decrypted with ffmpeg)
   if (keyUrl && !keyBuf) {
-    fs.writeFileSync(destPath, m3u8Data);
-    if (onProgress) onProgress(1, 1);
+    const rawSegments = [];
+    for (const line of playlist.split('\n')) {
+      const t = line.trim();
+      if (t && !t.startsWith('#') && t.length > 0) {
+        rawSegments.push(resolveUrl(m3u8Url, t));
+      }
+    }
+    if (rawSegments.length === 0) throw new Error('m3u8中未找到视频分段');
+    const total = rawSegments.length;
+    const allSegments = [];
+    for (let i = 0; i < total; i++) {
+      let buf;
+      try { buf = await downloadBuf(rawSegments[i], headers(usedAuth)); }
+      catch { buf = await downloadBuf(rawSegments[i], headers(false)); }
+      allSegments.push(buf);
+      if (onProgress) onProgress(i + 1, total);
+    }
+    const merged = Buffer.concat(allSegments);
+    // Save as .ts (change extension from .m3u8 to .ts)
+    const tsPath = destPath.replace(/\.m3u8$/i, '.ts');
+    fs.writeFileSync(tsPath, merged);
+    if (fs.existsSync(destPath) && destPath !== tsPath) {
+      try { fs.unlinkSync(destPath); } catch {}
+    }
     return;
   }
 
@@ -180,9 +202,11 @@ async function downloadHls(m3u8Url, destPath, onProgress, token) {
     if (onProgress) onProgress(i + 1, total);
   }
 
-  // Save extension is .mp4 if decrypted, .ts if raw
+  // Save as .mp4 (decrypted or no encryption)
+  const mp4Path = destPath.replace(/\.ts$/i, '.mp4').replace(/\.m3u8$/i, '.mp4');
   const merged = Buffer.concat(allSegments);
-  fs.writeFileSync(destPath, merged);
+  fs.writeFileSync(mp4Path, merged);
+  if (fs.existsSync(destPath) && destPath !== mp4Path) { try { fs.unlinkSync(destPath); } catch {} }
 }
 
 // ─── Window ─────────────────────────────────────────────────────────────────
@@ -542,7 +566,9 @@ ipcMain.handle('download-files', async (event, { files }) => {
 
     try {
       if (isM3u8) {
-        await downloadHls(file.url, filePath, (downloaded, total) => {
+        const basePath = filePath.replace(/\.m3u8$/i, '');
+        const hlsDest = basePath + '.ts';
+        await downloadHls(file.url, hlsDest, (downloaded, total) => {
           if (mainWindow && total > 0) {
             mainWindow.webContents.send('download-progress', {
               fileName: file.name,
@@ -552,14 +578,10 @@ ipcMain.handle('download-files', async (event, { files }) => {
             });
           }
         }, accessToken);
-        // Rename to .mp4 if the download was decrypted (file > 1MB = real video)
-        if (fs.existsSync(filePath) && fs.statSync(filePath).size > 1024 * 1024) {
-          const mp4Path = filePath.replace(/\.m3u8$/i, '.mp4');
-          fs.renameSync(filePath, mp4Path);
-          results.push({ name: path.basename(mp4Path), success: true, path: mp4Path });
-        } else {
-          results.push({ name: path.basename(filePath), success: true, path: filePath });
-        }
+        // downloadHls saves as .ts (encrypted) or .mp4 (decrypted)
+        const mp4Dest = basePath + '.mp4';
+        const finalPath = fs.existsSync(mp4Dest) ? mp4Dest : (fs.existsSync(hlsDest) ? hlsDest : filePath);
+        results.push({ name: path.basename(finalPath), success: true, path: finalPath });
       } else {
         await new Promise((resolve, reject) => {
           downloadWithAuth(file.url, filePath, (downloaded, total) => {

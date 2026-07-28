@@ -3,6 +3,7 @@ release/
 build-output/
 dist/
 dist-v2/
+out/
 *.exe
 *.zip
 *.AppImage

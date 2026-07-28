@@ -17,7 +17,7 @@
     "appId": "com.smartedu.downloader",
     "productName": "SmartEdu下载器",
     "directories": {
-      "output": "dist"
+      "output": "out"
     },
     "files": [
       "main.js",
