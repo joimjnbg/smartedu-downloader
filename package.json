@@ -1,0 +1,60 @@
+{
+  "name": "smartedu-downloader",
+  "version": "1.0.0",
+  "description": "SmartEdu资源下载器 - 国家中小学智慧教育平台资源下载工具",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win-x64": "electron-builder --win --x64",
+    "build:win-arm64": "electron-builder --win --arm64",
+    "build:mac-x64": "electron-builder --mac --x64",
+    "build:mac-arm64": "electron-builder --mac --arm64",
+    "build:linux-x64": "electron-builder --linux --x64",
+    "build:linux-arm64": "electron-builder --linux --arm64",
+    "build:all": "electron-builder --win --mac --linux --x64 --arm64"
+  },
+  "build": {
+    "appId": "com.smartedu.downloader",
+    "productName": "SmartEdu下载器",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "icon.png"
+    ],
+    "win": {
+      "target": [
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "artifactName": "${productName}-${os}-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ],
+      "artifactName": "${productName}-${os}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64", "arm64"] }
+      ],
+      "artifactName": "${productName}-${os}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "keywords": ["smartedu", "downloader", "education"],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3"
+  }
+}

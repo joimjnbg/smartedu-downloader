@@ -1,0 +1,12 @@
+node_modules/
+release/
+build-output/
+dist/
+dist-v2/
+*.exe
+*.zip
+*.AppImage
+test-*.js
+test-*.ts
+test_*
+*.tmp

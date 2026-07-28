@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SmartEdu下载器</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#f0f2f5; color:#1a1a2e; padding:20px; min-height:100vh; }
+.container { max-width:960px; margin:0 auto; }
+.header { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+.header h1 { font-size:20px; }
+.subtitle { color:#666; font-size:13px; margin-bottom:16px; }
+.card { background:#fff; border-radius:12px; padding:20px; box-shadow:0 2px 8px rgba(0,0,0,.06); margin-bottom:14px; }
+label { font-weight:600; font-size:13px; display:block; margin-bottom:6px; }
+.input-row { display:flex; gap:8px; }
+input[type=text] { flex:1; padding:9px 12px; border:1.5px solid #d9d9d9; border-radius:8px; font-size:13px; outline:none; }
+input[type=text]:focus { border-color:#4f6ef7; }
+button { padding:9px 18px; border:none; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; transition:all .2s; white-space:nowrap; }
+button:disabled { opacity:.5; cursor:not-allowed; }
+.btn-primary { background:#4f6ef7; color:#fff; }
+.btn-primary:hover:not(:disabled) { background:#3b5de7; }
+.btn-success { background:#22c55e; color:#fff; }
+.btn-success:hover:not(:disabled) { background:#16a34a; }
+.btn-warn { background:#f59e0b; color:#fff; }
+.btn-warn:hover:not(:disabled) { background:#d97706; }
+.btn-sm { padding:5px 12px; font-size:12px; }
+
+.status { margin-top:10px; padding:8px 12px; border-radius:8px; font-size:13px; display:none; }
+.status.error { display:block; background:#fef2f2; color:#dc2626; border:1px solid #fecaca; }
+.status.success { display:block; background:#f0fdf4; color:#16a34a; border:1px solid #bbf7d0; }
+.status.info { display:block; background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; }
+
+.resource-title { font-size:15px; font-weight:600; margin-bottom:10px; }
+
+/* Tree */
+.tree { margin-top:2px; }
+.tree-node { user-select:none; }
+.tree-row { display:flex; align-items:center; gap:6px; padding:3px 0 3px 0; cursor:pointer; border-radius:4px; }
+.tree-row:hover { background:#f5f5f5; }
+.tree-check { width:16px; height:16px; cursor:pointer; accent-color:#4f6ef7; flex-shrink:0; }
+.tree-toggle { width:14px; flex-shrink:0; text-align:center; font-size:10px; color:#888; transition:transform .15s; }
+.tree-toggle.expanded { transform:rotate(90deg); }
+.tree-toggle.hidden { visibility:hidden; }
+.tree-icon { font-size:14px; flex-shrink:0; }
+.tree-name { font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tree-fmt { font-size:11px; color:#888; margin-left:auto; flex-shrink:0; }
+.tree-size { font-size:11px; color:#888; flex-shrink:0; min-width:50px; text-align:right; }
+.tree-children { padding-left:22px; }
+
+/* Progress */
+.progress-wrap { margin-top:10px; }
+.progress-bar-bg { height:6px; background:#e5e7eb; border-radius:3px; overflow:hidden; }
+.progress-bar-fill { height:100%; background:linear-gradient(90deg,#4f6ef7,#22c55e); border-radius:3px; transition:width .3s; width:0; }
+.progress-text { font-size:12px; color:#666; margin-top:4px; text-align:center; }
+.progress-file { font-size:11px; color:#888; text-align:center; }
+
+.dl-card { padding:12px 20px; }
+.dl-card h3 { font-size:13px; margin-bottom:8px; color:#666; }
+.dl-item { display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid #f5f5f5; font-size:12px; }
+.dl-item:last-child { border-bottom:none; }
+.dl-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dl-status { font-size:11px; padding:1px 6px; border-radius:3px; }
+.dl-status.done { background:#dcfce7; color:#16a34a; }
+.dl-status.dl { background:#dbeafe; color:#2563eb; }
+.dl-status.err { background:#fef2f2; color:#dc2626; }
+.dl-empty { color:#999; font-size:13px; text-align:center; padding:8px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4f6ef7" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    <h1>SmartEdu下载器</h1>
+    <span style="flex:1"></span>
+    <span id="tokenBadge" style="font-size:11px;padding:3px 8px;border-radius:4px;background:#e5e7eb;color:#666;cursor:pointer" title="点击设置 Access Token（下载受限资源需要）">🔑 未设置</span>
+  </div>
+  <p class="subtitle">粘贴国家中小学智慧教育平台的资源链接，自动解析所有可下载内容</p>
+
+  <div class="card">
+    <label for="urlInput">资源链接</label>
+    <div class="input-row">
+      <input type="text" id="urlInput" placeholder="支持教材、课件、作业、课程活动、实验课等任意链接" />
+      <button id="btnFetch" class="btn-primary" style="min-width:70px">解析</button>
+    </div>
+    <div id="status" class="status"></div>
+  </div>
+
+  <div id="resultCard" class="card" style="display:none">
+    <div class="resource-title" id="resTitle"></div>
+    <div id="treeContainer" class="tree"></div>
+    <div class="actions" style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <button id="btnSelectAll" class="btn-sm btn-primary">全选</button>
+      <button id="btnDeselectAll" class="btn-sm btn-warn">取消</button>
+      <span style="flex:1"></span>
+      <span id="selectCount" style="font-size:12px;color:#666">已选 0</span>
+      <button id="btnDownload" class="btn-success">下载选中</button>
+    </div>
+    <div class="progress-wrap" id="progressWrap" style="display:none">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
+      <div class="progress-text" id="progressText"></div>
+      <div class="progress-file" id="progressFile"></div>
+    </div>
+  </div>
+
+  <div class="card dl-card">
+    <h3>下载记录</h3>
+    <div id="downloadList"><div class="dl-empty">暂无下载记录</div></div>
+  </div>
+</div>
+<!-- Token Dialog (hidden by default) -->
+<div id="tokenDialog" class="modal-overlay" style="display:none">
+  <div class="modal">
+    <h3 style="margin-bottom:8px">设置 Access Token</h3>
+    <p style="font-size:12px;color:#666;margin-bottom:10px;line-height:1.5">
+      用于下载需要登录才能访问的资源。<br>
+      获取方法：登录 <a href="#" onclick="require('electron').shell.openExternal('https://basic.smartedu.cn')" style="color:#4f6ef7">basic.smartedu.cn</a> → F12 → 控制台 → 粘贴以下代码：
+    </p>
+    <pre style="font-size:11px;background:#f5f5f5;padding:8px;border-radius:6px;overflow-x:auto;margin-bottom:10px">(function(){const a=Object.keys(localStorage).find(k=>k.startsWith("ND_UC_AUTH"));if(!a)return console.error("请先登录");const t=JSON.parse(localStorage.getItem(a));console.log(JSON.parse(t.value).access_token)})()</pre>
+    <textarea id="tokenInput" style="width:100%;height:60px;padding:8px;border:1.5px solid #d9d9d9;border-radius:8px;font-size:12px;resize:vertical;outline:none" placeholder="粘贴 Access Token..."></textarea>
+    <div style="display:flex;gap:6px;margin-top:10px;justify-content:flex-end">
+      <button id="btnTokenCancel" class="btn-sm btn-secondary">取消</button>
+      <button id="btnTokenSave" class="btn-sm btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<style>
+.modal-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,.3); display:flex; align-items:center; justify-content:center; z-index:999; }
+.modal { background:#fff; border-radius:12px; padding:20px; width:480px; max-width:90vw; box-shadow:0 8px 30px rgba(0,0,0,.15); }
+.btn-secondary { background:#e5e7eb; color:#374151; }
+.btn-secondary:hover { background:#d1d5db; }
+</style>
+
+<script src="renderer.js"></script>
+</body>
+</html>
