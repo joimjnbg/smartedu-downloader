@@ -36,7 +36,9 @@
 
 ## 注意
 
-- 本 Release 仅提供 **Windows x64** 便携版
+- 本 Release 提供 **Windows x64** 和 **Windows x86 (32位)** 便携版
+- **x64**：64 位系统使用
+- **ia32**：32 位系统使用
 - macOS / Linux 用户请从源码构建：
 
 ```bash

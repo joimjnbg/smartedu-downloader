@@ -27,12 +27,13 @@
 
 | 平台 | 文件 | 说明 |
 |------|------|------|
-| Windows x64 | `SmartEdu下载器-win-x64.exe` | 便携版，无需安装，双击直接运行 |
+| Windows x64 | `SmartEdu下载器-win-x64.exe` | 64 位系统 |
+| Windows x86 | `SmartEdu下载器-win-ia32.exe` | 32 位系统 |
 | macOS x64 | 需从源码构建 | `npm run build:mac-x64` |
 | macOS ARM | 需从源码构建 | `npm run build:mac-arm64` |
 | Linux x64 | 需从源码构建 | `npm run build:linux-x64` |
 
-> 目前仅提供 Windows 预编译版本。其他平台用户请参考「从源码构建」章节自行编译。
+> 目前仅提供 Windows 预编译版本（x64 和 x86 均可用）。其他平台用户请参考「从源码构建」章节自行编译。
 
 ## 快速开始
 
@@ -93,7 +94,8 @@ npm run build:linux-x64    # Linux x64
 
 | 命令 | 产物 | 输出路径 |
 |------|------|---------|
-| `npm run build:win-x64` | Windows x64 便携 exe | `dist/SmartEdu下载器-win-x64.exe` |
+| `npx electron-builder --win portable --x64 --ia32` | Windows x64 + x86 便携版 | `dist/SmartEdu下载器-win-x64.exe` + `dist/SmartEdu下载器-win-ia32.exe` |
+| `npm run build:win-x64` | Windows x64 便携版 | `dist/SmartEdu下载器-win-x64.exe` |
 | `npm run build:mac-arm64` | macOS ARM (M系列) zip | `dist/SmartEdu下载器-mac-arm64.zip` |
 | `npm run build:linux-x64` | Linux AppImage | `dist/SmartEdu下载器-linux-x64.AppImage` |
 

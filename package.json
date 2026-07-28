@@ -28,7 +28,7 @@
     ],
     "win": {
       "target": [
-        { "target": "portable", "arch": ["x64"] }
+        { "target": "portable", "arch": ["x64", "ia32"] }
       ],
       "artifactName": "${productName}-${os}-${arch}.${ext}"
     },
