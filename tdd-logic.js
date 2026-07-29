@@ -143,14 +143,15 @@ assert('unknown: unrelated tchMaterial-like path not detected as textbook',
 
 group('2. URL Extraction (extractUrl)');
 
-// Video extraction
-const videoItems = makeVideoTiItems(['href', 'href-m3u8', 'href-hd-m3u8', 'href-720p-m3u8', 'href-480p-m3u8', 'href-360p-m3u8', 'thumbnail_1']);
+// Video extraction — disabled in v1.3.0 (Huawei WAF cannot be bypassed)
+const videoItems = makeVideoTiItems(['href', 'href-m3u8', 'href-720p-m3u8', 'href-480p-m3u8', 'href-360p-m3u8', 'thumbnail_1']);
 
 const vResult = lib.extractUrl(videoItems, 'mp4');
-assert('video: extracts m3u8 URL for mp4 request', !!vResult && vResult.format === 'm3u8');
-// href-m3u8 has highest priority, and its item has no encryption in test fixtures
-assert('video: encrypted flag matches source item', !!vResult && vResult.encrypted === false);
-assert('video: prefers href-m3u8 (first in HLS_PRIORITY)', !!vResult && vResult.url.includes('href-m3u8'));
+// Video download is disabled at the handler level (handleVideo throws error).
+// extractUrl itself may still match non-m3u8 items via fallback paths.
+// The important thing is it won't return format 'm3u8'.
+assert('video: does not return m3u8 format (video disabled)',
+  !vResult || vResult.format !== 'm3u8');
 
 // Document extraction with PDF fallback
 const docItems = makeDocTiItems(['image', 'pdf', 'thumbnail']);
@@ -203,7 +204,10 @@ assert('extractAllUrls: includes PDF', multiUrls.some(u => u.format === 'pdf'));
 
 const videoMulti = makeVideoTiItems(['href', 'href-m3u8', 'thumbnail_1']);
 const vMulti = lib.extractAllUrls(videoMulti);
-assert('extractAllUrls: video returns m3u8', vMulti.some(u => u.format === 'm3u8'));
+// extractAllUrls may still find a non-m3u8 fallback (e.g. via Priority 5 href match)
+// but should NOT return m3u8 format
+assert('extractAllUrls: video does not return m3u8 format',
+  !vMulti.some(u => u.format === 'm3u8'));
 
 assert('extractAllUrls: null input returns []', lib.extractAllUrls(null).length === 0);
 assert('extractAllUrls: empty input returns []', lib.extractAllUrls([]).length === 0);
@@ -233,24 +237,23 @@ const tree1 = lib.parseRelationResources(relations,
   { lesson_plan_design: '教学设计', classroom_record: '课堂实录', teaching_assets: '教学资源' }
 );
 
-assert('parse: returns 3 folders', tree1.length === 3);
+assert('parse: returns 2 folders (video skipped due to m3u8 disabled)',
+  tree1.length === 2);
 assert('parse: folder names match labels',
-  tree1[0].name === '教学设计' && tree1[1].name === '课堂实录' && tree1[2].name === '教学资源');
-assert('parse: each folder has children', tree1.every(f => f.children.length > 0));
-assert('parse: video folder contains m3u8',
-  tree1[1].children.some(c => c.format === 'm3u8'));
+  tree1[0].name === '教学设计' && tree1[1].name === '教学资源');
 assert('parse: doc folder contains pdf',
   tree1[0].children.some(c => c.format === 'pdf'));
 
 // Test auto-discovery: when relationKeys is empty, use all keys
 const tree2 = lib.parseRelationResources(relations, [], {});
 assert('auto-discover: includes extra_material', tree2.some(f => f.name === 'extra_material'));
-assert('auto-discover: includes all 4 relation keys', tree2.length === 4);
+// classroom_record has only m3u8 items (video disabled), so it's skipped
+assert('auto-discover: includes 3 non-video relation keys', tree2.length === 3);
 
 // Test auto-discovery: when relationKeys is null
 const tree3 = lib.parseRelationResources(relations, null, null);
 assert('auto-discover with null: includes extra_material', tree3.some(f => f.name === 'extra_material'));
-assert('auto-discover with null: includes all 4', tree3.length === 4);
+assert('auto-discover with null: includes 3 non-video keys', tree3.length === 3);
 
 // Test empty relations
 const tree4 = lib.parseRelationResources({}, ['key1'], {});
@@ -359,43 +362,10 @@ assert('audio formats mapped', lib.TYPE_LABELS.mp3 === '音频' && lib.TYPE_LABE
 assert('archive formats mapped', lib.TYPE_LABELS.zip === '压缩包' && lib.TYPE_LABELS['7z'] === '压缩包');
 assert('unknown format returns uppercase', lib.TYPE_LABELS['xyz'] === undefined);
 
-// ───────────────────────────────────────────────────────────────────────────
-//  8. HLS Priority Order
-// ───────────────────────────────────────────────────────────────────────────
-
-group('8. HLS Priority Flags');
-
-assert('href-m3u8 is first priority', lib.HLS_PRIORITY[0] === 'href-m3u8');
-assert('href-hd-m3u8 is second', lib.HLS_PRIORITY[1] === 'href-hd-m3u8');
-assert('href-1080p-m3u8 is third', lib.HLS_PRIORITY[2] === 'href-1080p-m3u8');
-assert('href-hd-m3u8 is included', lib.HLS_PRIORITY.includes('href-hd-m3u8'));
-assert('href-sd-m3u8 is included', lib.HLS_PRIORITY.includes('href-sd-m3u8'));
-assert('href-1080p-m3u8 is included', lib.HLS_PRIORITY.includes('href-1080p-m3u8'));
-assert('href is last (fallback)', lib.HLS_PRIORITY[lib.HLS_PRIORITY.length - 1] === 'href');
-
-// Verify the extractUrl picks href-hd-m3u8 over href-720p-m3u8
-// when href-m3u8 is not available
-const hdItems = makeVideoTiItems(['href-720p-m3u8', 'href-hd-m3u8', 'href-480p-m3u8']);
-const hdResult = lib.extractUrl(hdItems, 'mp4');
-assert('href-hd-m3u8 preferred over href-720p-m3u8 (quality order)',
-  !!hdResult && hdResult.url.includes('href-hd-m3u8'));
-
-// If href-m3u8 IS available, it takes priority over everything
-const hdItems2 = makeVideoTiItems(['href-hd-m3u8', 'href-m3u8', 'href-720p-m3u8']);
-const hdResult2 = lib.extractUrl(hdItems2, 'mp4');
-assert('href-m3u8 is top priority over href-hd-m3u8',
-  !!hdResult2 && hdResult2.url.includes('href-m3u8'));
-
-// href is the lowest priority fallback
-const hdItems3 = makeVideoTiItems(['href', 'href-sd-m3u8']);
-const hdResult3 = lib.extractUrl(hdItems3, 'mp4');
-assert('href-sd-m3u8 preferred over plain href',
-  !!hdResult3 && hdResult3.url.includes('href-sd-m3u8'));
-
-// Plain href is the very last fallback
-const hdItems4 = makeVideoTiItems(['href', 'thumbnail_1']);
-const hdResult4 = lib.extractUrl(hdItems4, 'mp4');
-assert('href is last fallback', !!hdResult4 && hdResult4.url.includes('href'));
+// Note: HLS (m3u8) video download has been DISABLED in v1.3.0 because
+// the platform's AES-128 key server is behind Huawei WAF JS Challenge
+// that cannot be reliably bypassed outside a full browser.
+// See main.js for detailed explanation.
 
 // ───────────────────────────────────────────────────────────────────────────
 //  Summary

@@ -3,7 +3,6 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
-const crypto = require('crypto');
 const lib = require('./lib');
 
 let mainWindow;
@@ -94,81 +93,23 @@ function handleResponse(res, resolve, reject, dest, onProgress) {
   ws.on('error', reject);
 }
 
-// ─── DRM key fetcher ────────────────────────────────────────────────────────
-// Key server (ndvideo-key.ykt.eduyun.cn) is behind Huawei WAF that returns
-// a JS challenge. We bypass it by having a real BrowserWindow execute the JS:
-//   1. Load root URL in hidden iframe inside main window → WAF JS runs → cookies set
-//   2. Then fetch the key URL from the same renderer (cookies attached)
-
-async function fetchDrmKey(keyUrl, token) {
-  // Quick path: try direct net.fetch first (works if WAF is absent or simple)
-  try {
-    const h = { 'User-Agent': 'Mozilla/5.0' };
-    if (token) { h['Authorization'] = `Bearer ${token}`; h['X-ND-AUTH'] = `MAC id="${token}",nonce="0",mac="0"`; }
-    const resp = await net.fetch(keyUrl, { method: 'GET', headers: h });
-    if (resp.ok) {
-      const buf = Buffer.from(await resp.arrayBuffer());
-      if (buf.length === 16) return buf;
-    }
-  } catch {}
-
-  // Main path: use the visible main window's renderer (real browser context)
-  // The WAF JS challenge executes in the iframe, sets cookies in the shared
-  // session, then a second fetch() goes through WAF and returns the key.
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const KEY_ROOT = 'https://ndvideo-key.ykt.eduyun.cn';
-    const script = `
-      (async () => {
-        // Step 1: load key-server root in hidden iframe → triggers WAF JS
-        const f = document.createElement('iframe');
-        f.style.display = 'none';
-        f.src = '${KEY_ROOT}/';
-        document.body.appendChild(f);
-        await new Promise(r => { f.onload = r; setTimeout(r, 8000); });
-
-        // Step 2: now fetch the real key URL (cookies from WAF are attached)
-        try {
-          const resp = await fetch('${keyUrl}', { credentials: 'include' });
-          if (!resp.ok) return null;
-          const buf = await resp.arrayBuffer();
-          return Array.from(new Uint8Array(buf));
-        } catch(e) { return null; }
-      })();
-    `;
-    try {
-      const result = await mainWindow.webContents.executeJavaScript(script);
-      if (result && result.length === 16) return Buffer.from(result);
-    } catch {}
-  }
-
-  // Last resort: hidden BrowserWindow fallback (for edge cases)
-  return new Promise((resolve) => {
-    let done = false;
-    const cleanup = () => { if (!done) { done = true; try { w.close(); } catch {} resolve(null); } };
-    const w = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
-    const filter = { urls: ['https://ndvideo-key.ykt.eduyun.cn/*'] };
-    w.webContents.session.webRequest.onBeforeSendHeaders(filter, (d, cb) => {
-      d.requestHeaders['User-Agent'] = 'Mozilla/5.0';
-      if (token) { d.requestHeaders['Authorization'] = `Bearer ${token}`; d.requestHeaders['X-ND-AUTH'] = `MAC id="${token}",nonce="0",mac="0"`; }
-      cb({ requestHeaders: d.requestHeaders });
-    });
-    w.webContents.on('did-finish-load', () => {
-      setTimeout(async () => {
-        if (done) return;
-        try {
-          const r = await w.webContents.executeJavaScript(`fetch('${keyUrl}',{credentials:'include'}).then(r=>r.ok?r.arrayBuffer():null).then(b=>b?Array.from(new Uint8Array(b)):null)`);
-          if (r && r.length === 16) { done = true; w.close(); resolve(Buffer.from(r)); return; }
-        } catch {}
-        cleanup();
-      }, 3000);
-    });
-    w.webContents.on('did-fail-load', cleanup);
-    w.loadURL('https://ndvideo-key.ykt.eduyun.cn/');
-    setTimeout(cleanup, 20000);
-  });
-}
-
-// ─── HLS (m3u8) downloader ──────────────────────────────────────────────────
+// ─── HLS video download: DISABLED ──────────────────────────────────────────
+//
+// 平台视频使用 AES-128 加密 + 华为 WAF (Web Application Firewall) 双重保护。
+// 密钥服务器 ndvideo-key.ykt.eduyun.cn 部署了 JS Challenge 防护机制，
+// 需要真实浏览器执行 JavaScript 才能通过验证。Electron 的 net.fetch 无法
+// 执行 JS，即使使用隐藏 BrowserWindow 加载页面触发 WAF，也会因 Electron
+// 与标准浏览器的指纹差异导致 WAF 拒绝提供服务或返回伪造密钥。
+//
+// 先后尝试过以下方案均不可靠：
+//   1. net.fetch 直接请求 → WAF 拦截 403
+//   2. 隐藏 BrowserWindow 加载根页面触发 WAF JS → Cookie 无法跨进程共享
+//   3. 主窗口 iframe + executeJavaScript → WAF 检测到非标准浏览器指纹
+//   4. 独立隐藏窗口 + session.webRequest 注入认证头 → 仍被 WAF 识别拦截
+//
+// 结论：在不运行完整 Chromium 浏览器的情况下，无法可靠绕过华为 WAF 获取
+// 解密密钥。因此 v1.3.0 起取消视频下载功能。如需下载视频，请在浏览器中
+// 打开后手动保存，或使用浏览器扩展程序。
 
 function downloadBuf(url, headers) {
   return new Promise((resolve, reject) => {
@@ -180,102 +121,6 @@ function downloadBuf(url, headers) {
       res.on('end', () => resolve(Buffer.concat(chunks)));
     }).on('error', reject);
   });
-}
-
-function resolveUrl(base, rel) {
-  if (rel.startsWith('http')) return rel;
-  const u = new URL(base);
-  if (rel.startsWith('/')) return u.origin + rel;
-  return base.substring(0, base.lastIndexOf('/') + 1) + rel;
-}
-
-async function downloadHls(m3u8Url, destPath, onProgress, token) {
-  function headers(withAuth) {
-    const h = { 'User-Agent': 'Mozilla/5.0' };
-    if (withAuth && token) {
-      h['Authorization'] = `Bearer ${token}`;
-      h['X-ND-AUTH'] = `MAC id="${token}",nonce="0",mac="0"`;
-    }
-    return h;
-  }
-
-  // Download m3u8 playlist
-  let m3u8Data;
-  let usedAuth = true;
-  try { m3u8Data = await downloadBuf(m3u8Url, headers(true)); }
-  catch { usedAuth = false; m3u8Data = await downloadBuf(m3u8Url, headers(false)); }
-  const playlist = m3u8Data.toString('utf8');
-
-  // Check for encryption
-  const keyMatch = playlist.match(/URI="([^"]+)"/);
-  const ivMatch = playlist.match(/IV=0x([0-9a-fA-F]+)/);
-  const keyUrl = keyMatch ? keyMatch[1] : null;
-  const iv = ivMatch ? Buffer.from(ivMatch[1], 'hex') : null;
-
-  // Fetch AES-128 key — key server (ndvideo-key.ykt.eduyun.cn) is behind Huawei WAF
-  // which returns a JS challenge. `net.fetch` can't execute JS, so we use a hidden
-  // BrowserWindow: the WAF JS runs, sets cookies, then we fetch the key via renderer fetch().
-  let keyBuf = null;
-  if (keyUrl) {
-    keyBuf = await fetchDrmKey(keyUrl, token);
-  }
-
-  // For encrypted streams where key is unavailable, download segments
-  // and concatenate into .ts file (data preserved, can be decrypted with ffmpeg)
-  if (keyUrl && !keyBuf) {
-    const rawSegments = [];
-    for (const line of playlist.split('\n')) {
-      const t = line.trim();
-      if (t && !t.startsWith('#') && t.length > 0) {
-        rawSegments.push(resolveUrl(m3u8Url, t));
-      }
-    }
-    if (rawSegments.length === 0) throw new Error('m3u8中未找到视频分段');
-    const total = rawSegments.length;
-    const allSegments = [];
-    for (let i = 0; i < total; i++) {
-      let buf;
-      try { buf = await downloadBuf(rawSegments[i], headers(usedAuth)); }
-      catch { buf = await downloadBuf(rawSegments[i], headers(false)); }
-      allSegments.push(buf);
-      if (onProgress) onProgress(i + 1, total);
-    }
-    const merged = Buffer.concat(allSegments);
-    fs.writeFileSync(destPath, merged);
-    return;
-  }
-
-  // Parse segment URLs
-  const rawSegments = [];
-  for (const line of playlist.split('\n')) {
-    const t = line.trim();
-    if (t && !t.startsWith('#') && t.length > 0) {
-      rawSegments.push(resolveUrl(m3u8Url, t));
-    }
-  }
-  if (rawSegments.length === 0) throw new Error('m3u8中未找到视频分段');
-
-  // Download and optionally decrypt all segments
-  const total = rawSegments.length;
-  const allSegments = [];
-  for (let i = 0; i < total; i++) {
-    let buf;
-    try { buf = await downloadBuf(rawSegments[i], headers(usedAuth)); }
-    catch { buf = await downloadBuf(rawSegments[i], headers(false)); }
-    if (keyBuf && iv) {
-      try {
-        const decipher = crypto.createDecipheriv('aes-128-cbc', keyBuf, iv);
-        decipher.setAutoPadding(false);
-        buf = Buffer.concat([decipher.update(buf), decipher.final()]);
-      } catch {}
-    }
-    allSegments.push(buf);
-    if (onProgress) onProgress(i + 1, total);
-  }
-
-  // Save as .ts (H.264/AAC in MPEG-TS container — plays in VLC/PotPlayer/ffplay)
-  const merged = Buffer.concat(allSegments);
-  fs.writeFileSync(destPath, merged);
 }
 
 // ─── Window ─────────────────────────────────────────────────────────────────
@@ -291,24 +136,6 @@ function createWindow() {
     icon: path.join(__dirname, 'icon.png'),
   });
   mainWindow.loadFile('index.html');
-
-  // Set up CORS bypass + auth headers for the key-server domain so the
-  // renderer's fetch() can reach it (renderer origin is file://, which is
-  // cross-origin).
-  const keyFilter = { urls: ['https://ndvideo-key.ykt.eduyun.cn/*'] };
-  mainWindow.webContents.session.webRequest.onBeforeSendHeaders(keyFilter, (details, callback) => {
-    details.requestHeaders['User-Agent'] = 'Mozilla/5.0';
-    if (accessToken) {
-      details.requestHeaders['Authorization'] = `Bearer ${accessToken}`;
-      details.requestHeaders['X-ND-AUTH'] = `MAC id="${accessToken}",nonce="0",mac="0"`;
-    }
-    callback({ requestHeaders: details.requestHeaders });
-  });
-  mainWindow.webContents.session.webRequest.onHeadersReceived(keyFilter, (details, callback) => {
-    details.responseHeaders['Access-Control-Allow-Origin'] = ['null'];
-    details.responseHeaders['Access-Control-Allow-Credentials'] = ['true'];
-    callback({ responseHeaders: details.responseHeaders });
-  });
 }
 
 app.whenReady().then(() => { loadToken(); createWindow(); });
@@ -492,29 +319,14 @@ async function handleThematicCourse(url) {
 }
 
 async function handleVideo(url) {
-  const contentId = getUrlParam(url, 'contentId');
-  if (!contentId) throw new Error('未找到 contentId');
-  const isWisdom = url.includes('/wisdom/');
-  const base = isWisdom
-    ? 'https://s-file-1.ykt.cbern.com.cn/ldjy/ndrs/special_edu/resources/details'
-    : 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/resources/details';
-  const data = await fetchJson(`${base}/${contentId}.json`);
-  const title = data.title || '未命名';
-  const cp = data.custom_properties || {};
-  const format = cp.format || 'mp4';
-  const size = cp.size || 0;
-
-  // Try top-level ti_items first
-  let info = extractUrl(data.ti_items, format, size);
-
-  // Fallback: try relations (for multi-video resources)
-  if (!info && data.relations) {
-    const tree = parseRelationResources(data.relations, null, {});
-    if (tree.length) return { title: sanitize(title), tree };
-  }
-
-  if (!info) throw new Error('未找到可下载的视频');
-  return { title, tree: [makeFileNode(sanitize(title), format, info.format, info.url, size)] };
+  throw new Error(
+    '暂不支持下载视频。\n\n' +
+    '原因：平台视频使用 AES-128 加密，密钥服务器 ndvideo-key.ykt.eduyun.cn 部署了华为 WAF (Web Application Firewall) JS Challenge 防护。\n\n' +
+    '该 WAF 需要真实浏览器环境执行 JavaScript 才能通过验证，Electron 环境无法可靠绕过。' +
+    'v1.2.x 中尝试了隐藏 BrowserWindow + iframe 等多种方案，' +
+    '但 WAF 始终能检测到非标准浏览器指纹并拒绝提供解密密钥。\n\n' +
+    '如需下载视频，请在浏览器中打开后手动保存，或使用浏览器扩展程序。'
+  );
 }
 
 // ─── IPC: Token ─────────────────────────────────────────────────────────────
@@ -560,18 +372,13 @@ ipcMain.handle('download-files', async (event, { files }) => {
   let completed = 0;
 
   for (const file of files) {
-    const isM3u8 = file.format === 'm3u8';
-    // HLS downloads: keep .m3u8 (browser-playable when encrypted),
-    // will be renamed to .mp4 only if decryption succeeds
     const filePath = path.join(destDir, file.relativePath);
     const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
 
     try {
-      if (isM3u8) {
-        const basePath = filePath.replace(/\.m3u8$/i, '');
-        const hlsDest = basePath + '.ts';
-        await downloadHls(file.url, hlsDest, (downloaded, total) => {
+      await new Promise((resolve, reject) => {
+        downloadWithAuth(file.url, filePath, (downloaded, total) => {
           if (mainWindow && total > 0) {
             mainWindow.webContents.send('download-progress', {
               fileName: file.name,
@@ -580,24 +387,9 @@ ipcMain.handle('download-files', async (event, { files }) => {
               completed, totalFiles: files.length,
             });
           }
-        }, accessToken);
-        // downloadHls saves as .ts (always — decrypted or encrypted)
-        results.push({ name: path.basename(hlsDest), success: true, path: hlsDest });
-      } else {
-        await new Promise((resolve, reject) => {
-          downloadWithAuth(file.url, filePath, (downloaded, total) => {
-            if (mainWindow && total > 0) {
-              mainWindow.webContents.send('download-progress', {
-                fileName: file.name,
-                percent: Math.round((downloaded / total) * 100),
-                downloaded, total,
-                completed, totalFiles: files.length,
-              });
-            }
-          }).then(resolve).catch(reject);
-        });
-        results.push({ name: path.basename(filePath), success: true, path: filePath });
-      }
+        }).then(resolve).catch(reject);
+      });
+      results.push({ name: path.basename(filePath), success: true, path: filePath });
     } catch (e) {
       results.push({ name: file.name, success: false, error: e.message });
     }

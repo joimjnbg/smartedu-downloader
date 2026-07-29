@@ -8,16 +8,16 @@
 
 ## 功能
 
-- **支持多种资源类型** — 教材、同步课程、基础作业、课件、一堂课、实验课、精品课、专题课程、视频
+- **支持多种资源类型** — 教材、同步课程、基础作业、课件、一堂课、实验课、精品课、专题课程
 - **自动发现所有资源** — 自动识别 API 返回的所有资源分类，无需硬编码白名单
 - **树形文件选择** — 自动解析资源结构，勾选需要下载的文件
 - **批量下载** — 保持原目录结构，一次性下载所有选中文件
 - **Access Token** — 设置令牌后可下载受限资源
 - **自动格式适配**
-  - 视频（mp4）→ 识别 HLS 流（m3u8），解密合并为 mp4
   - 课件/教案（pptx/docx）→ 识别 PDF 回退，自动标注 `[PDF转换]`
+  - 文档/表格/压缩包 → 直接下载源文件
   - 图片/音频 → 支持 jpg/png/gif/mp3/wav/aac 等格式
-- **质量优先** — HLS 流按 `href-m3u8` > `href-hd-m3u8` > `href-1080p` > `href-720p` > ... > `href` 优先级下载最高画质
+- **视频下载已取消** — 见下方说明
 
 ## 截图
 
@@ -138,13 +138,20 @@ smartedu-downloader/
 | `/syncClassroom/basicWork/detail` | 基础作业 | `contentId` | `s-file-1/special_edu/resources/details` |
 | `/qualityCourse` | 精品课 | `courseId` | `s-file-1/elite_lesson/resources` |
 | `/schoolService/detail` | 专题课程 | `thematic_course` + `contentId` | `s-file-1/special_edu/thematic_course` |
-| `/sedu/detail` 或 `/wisdom/detail` | 视频 | `contentId` | `s-file-1/special_edu/resources/details` |
 
-> 从 v1.3.0 开始，URL 路径采用 `URL API` 精确匹配参数，不再依赖字符串 `includes()`，彻底避免了因参数顺序或路径片段导致的误识别。
+> 从 v1.3.0 开始，URL 路径采用 `URL API` 精确匹配参数，不再依赖字符串 `includes()`。
+
+### 关于视频下载
+
+**v1.3.0 起已取消视频下载功能。** 原因：
+
+平台视频使用 AES-128 加密，密钥服务器 `ndvideo-key.ykt.eduyun.cn` 部署了**华为 WAF (Web Application Firewall) JS Challenge**。该 WAF 需要真实浏览器环境执行 JavaScript 才能通过验证。Electron 环境（以及任何非完整浏览器的 HTTP 客户端）无法可靠绕过。
+
+如需下载视频，请在浏览器中打开页面后手动保存，或使用浏览器扩展程序。
 
 ## 注意事项
 
-- **视频下载**：平台视频为 HLS 加密流（m3u8 + AES-128）。若密钥可获取则自动解密合并为 mp4；否则保存为 .m3u8 文件，可在登录后的浏览器中播放
+- **视频下载**：v1.3.0 起已取消。平台使用 AES-128 + 华为 WAF，无法可靠解密。
 - **课件/教案**：部分资源不再提供源文件（pptx/docx），平台只返回 PDF 转换版，下载后自动标注 `[PDF转换]`
 - **Access Token**：会保存在本地 `userData/token.json`，重启后仍有效
 

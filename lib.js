@@ -72,12 +72,6 @@ function detectType(url) {
 
 // ─── Extract URL from ti_items ────────────────────────────────────────────
 
-const HLS_PRIORITY = [
-  'href-m3u8', 'href-hd-m3u8', 'href-1080p-m3u8',
-  'href-720p-m3u8', 'href-480p-m3u8', 'href-360p-m3u8',
-  'href-sd-m3u8', 'href',
-];
-
 const TYPE_LABELS = {
   mp4: '视频', m3u8: '视频', ts: '视频', avi: '视频', flv: '视频', mov: '视频',
   pdf: '文稿', ppt: '课件', pptx: '课件', doc: '文档', docx: '文档',
@@ -97,20 +91,8 @@ function extractUrl(tiItems, preferredFormat, size) {
     }
   }
 
-  // Priority 2: m3u8 HLS streams (for mp4/m3u8 requests)
-  if (preferredFormat === 'mp4' || preferredFormat === 'm3u8') {
-    for (const flag of HLS_PRIORITY) {
-      for (const item of tiItems) {
-        if (item.ti_file_flag === flag) {
-          const url = getStorageUrl(item);
-          if (url) {
-            const enc = item.custom_properties && item.custom_properties.encryption;
-            return { url, format: 'm3u8', encrypted: enc === 'drm' || enc === true };
-          }
-        }
-      }
-    }
-  }
+  // Priority 2: m3u8 HLS streams — 已禁用（见 main.js 顶部说明）
+  // 平台视频使用 AES-128 加密 + 华为 WAF 防护，无法可靠解密
 
   // Priority 3: match by size for non-mp4
   if (preferredFormat !== 'mp4' && preferredFormat !== 'm3u8') {
@@ -137,6 +119,8 @@ function extractUrl(tiItems, preferredFormat, size) {
       const url = getStorageUrl(item);
       if (url) {
         const fmt = item.ti_format || preferredFormat;
+        // Skip m3u8/mp4 video formats — video download is disabled
+        if (fmt === 'm3u8' || fmt === 'mp4' || fmt === 'ts') continue;
         return { url, format: fmt };
       }
     }
@@ -159,21 +143,26 @@ function extractAllUrls(tiItems) {
     if (item.ti_size) tiSize = item.ti_size;
   }
 
-  // Try PDF
-  const pdf = extractUrl(tiItems, 'pdf');
-  if (pdf) results.push(pdf);
+  // Skip if original format is video (disabled)
+  const isVideo = tiFormat && ['mp4', 'm3u8', 'ts', 'avi', 'flv', 'mov'].includes(tiFormat);
 
-  // Try original format
-  if (tiFormat && tiFormat !== 'pdf') {
+  // Try PDF
+  if (!isVideo) {
+    const pdf = extractUrl(tiItems, 'pdf');
+    if (pdf) results.push(pdf);
+  }
+
+  // Try original format (skip video formats)
+  if (tiFormat && tiFormat !== 'pdf' && !isVideo) {
     const orig = extractUrl(tiItems, tiFormat, tiSize);
     if (orig && !results.some(r => r.url === orig.url)) {
       results.unshift(orig);
     }
   }
 
-  // If nothing found, try common formats
+  // If nothing found, try common formats (video formats excluded)
   if (results.length === 0) {
-    for (const fmt of ['mp4', 'pptx', 'docx', 'xlsx', 'zip']) {
+    for (const fmt of ['pptx', 'docx', 'xlsx', 'zip']) {
       const r = extractUrl(tiItems, fmt);
       if (r && !results.some(x => x.url === r.url)) results.push(r);
     }
@@ -277,6 +266,5 @@ module.exports = {
   makeFileNode,
   parseRelationResources,
   TYPE_LABELS,
-  HLS_PRIORITY,
   getApiUrl,
 };
