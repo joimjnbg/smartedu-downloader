@@ -1,6 +1,6 @@
 {
   "name": "smartedu-downloader",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "SmartEdu资源下载器 - 国家中小学智慧教育平台资源下载工具",
   "main": "main.js",
   "scripts": {
