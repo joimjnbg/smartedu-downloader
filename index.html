@@ -94,7 +94,15 @@ button:disabled { opacity:.5; cursor:not-allowed; }
       <button id="btnDeselectAll" class="btn-sm btn-warn">取消</button>
       <span style="flex:1"></span>
       <span id="selectCount" style="font-size:12px;color:#666">已选 0</span>
+      <label for="concurrencySel" style="font-weight:400;font-size:12px;margin:0;display:inline">并发</label>
+      <select id="concurrencySel" style="padding:7px;border:1.5px solid #d9d9d9;border-radius:8px;font-size:12px;outline:none">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="4" selected>4</option>
+        <option value="8">8</option>
+      </select>
       <button id="btnDownload" class="btn-success">下载选中</button>
+      <button id="btnCancel" class="btn-warn" style="display:none">取消下载</button>
     </div>
     <div class="progress-wrap" id="progressWrap" style="display:none">
       <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
@@ -114,7 +122,7 @@ button:disabled { opacity:.5; cursor:not-allowed; }
     <h3 style="margin-bottom:8px">设置 Access Token</h3>
     <p style="font-size:12px;color:#666;margin-bottom:10px;line-height:1.5">
       用于下载需要登录才能访问的资源。<br>
-      获取方法：登录 <a href="#" onclick="require('electron').shell.openExternal('https://basic.smartedu.cn')" style="color:#4f6ef7">basic.smartedu.cn</a> → F12 → 控制台 → 粘贴以下代码：
+      获取方法：登录 <a href="#" onclick="window.api && window.api.openExternal('https://basic.smartedu.cn'); return false;" style="color:#4f6ef7">basic.smartedu.cn</a> → F12 → 控制台 → 粘贴以下代码：
     </p>
     <pre style="font-size:11px;background:#f5f5f5;padding:8px;border-radius:6px;overflow-x:auto;margin-bottom:10px">(function(){const a=Object.keys(localStorage).find(k=>k.startsWith("ND_UC_AUTH"));if(!a)return console.error("请先登录");const t=JSON.parse(localStorage.getItem(a));console.log(JSON.parse(t.value).access_token)})()</pre>
     <textarea id="tokenInput" style="width:100%;height:60px;padding:8px;border:1.5px solid #d9d9d9;border-radius:8px;font-size:12px;resize:vertical;outline:none" placeholder="粘贴 Access Token..."></textarea>

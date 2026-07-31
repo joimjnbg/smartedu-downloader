@@ -1,9 +1,9 @@
-const { app, BrowserWindow, ipcMain, dialog, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-const https = require('https');
-const http = require('http');
 const fs = require('fs');
 const lib = require('./lib');
+const net = require('./net');
+const { DownloadQueue } = require('./downloader');
 
 let mainWindow;
 let accessToken = '';
@@ -25,72 +25,8 @@ function saveToken(token) {
   accessToken = token || '';
   try {
     fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
-    fs.writeFileSync(tokenFile, JSON.stringify({ access_token: accessToken }));
+    fs.writeFileSync(tokenFile, JSON.stringify({ access_token: accessToken }), { mode: 0o600 });
   } catch {}
-}
-
-function authHeaders() {
-  const h = { 'User-Agent': 'Mozilla/5.0' };
-  if (accessToken) {
-    h['Authorization'] = `Bearer ${accessToken}`;
-    h['X-ND-AUTH'] = `MAC id="${accessToken}",nonce="0",mac="0"`;
-  }
-  return h;
-}
-
-function fetchJson(url, withAuth) {
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith('https') ? https : http;
-    const headers = withAuth ? authHeaders() : { 'User-Agent': 'Mozilla/5.0' };
-    client.get(url, { headers }, (res) => {
-      let data = '';
-      res.on('data', (c) => data += c);
-      res.on('end', () => {
-        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
-        try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
-      });
-    }).on('error', reject);
-  });
-}
-
-function downloadWithAuth(url, dest, onProgress) {
-  // Try without auth first, then with auth if needed
-  function attempt(headers) {
-    return new Promise((resolve, reject) => {
-      const client = url.startsWith('https') ? https : http;
-      client.get(url, { headers }, (res) => {
-        if (res.statusCode === 200) {
-          handleResponse(res, resolve, reject, dest, onProgress);
-        } else {
-          res.resume(); // drain unused response
-          reject({ code: res.statusCode });
-        }
-      }).on('error', reject);
-    });
-  }
-
-  return attempt({ 'User-Agent': 'Mozilla/5.0' }).catch((err) => {
-    if (err && (err.code === 401 || err.code === 403) && accessToken) {
-      return attempt(authHeaders());
-    }
-    throw new Error(`HTTP ${err && err.code ? err.code : 'error'}`);
-  });
-}
-
-function handleResponse(res, resolve, reject, dest, onProgress) {
-  if (res.statusCode !== 200) {
-    return reject(new Error(`HTTP ${res.statusCode}`));
-  }
-  const total = parseInt(res.headers['content-length'] || '0');
-  let downloaded = 0;
-  const ws = fs.createWriteStream(dest);
-  res.on('data', (c) => {
-    downloaded += c.length;
-    if (onProgress && total > 0) onProgress(downloaded, total);
-  });
-  res.pipe(ws);
-  ws.on('finish', () => { ws.close(); resolve(); });
-  ws.on('error', reject);
 }
 
 // ─── HLS video download: DISABLED ──────────────────────────────────────────
@@ -111,18 +47,6 @@ function handleResponse(res, resolve, reject, dest, onProgress) {
 // 解密密钥。因此 v1.3.0 起取消视频下载功能。如需下载视频，请在浏览器中
 // 打开后手动保存，或使用浏览器扩展程序。
 
-function downloadBuf(url, headers) {
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith('https') ? https : http;
-    client.get(url, { headers, rejectUnauthorized: true }, (res) => {
-      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode}`)); }
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-    }).on('error', reject);
-  });
-}
-
 // ─── Window ─────────────────────────────────────────────────────────────────
 
 function createWindow() {
@@ -136,6 +60,7 @@ function createWindow() {
     icon: path.join(__dirname, 'icon.png'),
   });
   mainWindow.loadFile('index.html');
+  mainWindow.on('closed', () => { mainWindow = null; });
 }
 
 app.whenReady().then(() => { loadToken(); createWindow(); });
@@ -152,6 +77,8 @@ const extractUrl = lib.extractUrl;
 const makeFileNode = lib.makeFileNode;
 const parseRelationResources = lib.parseRelationResources;
 
+const fetchJson = (url) => net.fetchJson(url, { token: accessToken, retries: 3, timeoutMs: 20000 });
+
 // ─── URL Handlers ──────────────────────────────────────────────────────────
 
 async function handleBasicWork(url) {
@@ -160,13 +87,11 @@ async function handleBasicWork(url) {
   const data = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/resources/details/${contentId}.json`);
   const title = data.title || '未命名';
 
-  // Try top-level ti_items first
   const cp = data.custom_properties || {};
   const format = cp.format || 'pdf';
   const size = cp.size || 0;
   let info = extractUrl(data.ti_items, format, size);
 
-  // Fallback: try relations (auto-discover all keys)
   if (!info && data.relations) {
     const tree = parseRelationResources(data.relations, null, {});
     if (tree.length) return { title: sanitize(title), tree };
@@ -198,7 +123,6 @@ async function handleClassActivity(url) {
   const tlist = data.teacher_list || [];
   const teacherName = tlist.length ? tlist[0].name || '' : '';
   const prefix = teacherName ? `[${sanitize(teacherName)}]` : '';
-  // Auto-discover all relation keys (not just national_course_resource)
   const tree = parseRelationResources(relations, null, {
     national_course_resource: '课程资源',
     lesson_plan_design: '教学设计',
@@ -217,10 +141,8 @@ async function handleCourseware(url) {
   const format = cp.format || '';
   const size = cp.size || 0;
 
-  // Try top-level ti_items first
   let info = extractUrl(data.ti_items, format, size);
 
-  // Fallback: try relations
   if (!info && data.relations) {
     const tree = parseRelationResources(data.relations, null, {});
     if (tree.length) return { title: sanitize(title), tree };
@@ -239,7 +161,6 @@ async function handleOneTeacher(url) {
   const tlist = data.teacher_list || [];
   const teacherName = tlist.length ? tlist[0].name || '' : '';
   const prefix = teacherName ? `[${sanitize(teacherName)}]` : '';
-  // Auto-discover all relation keys
   const tree = parseRelationResources(relations, null, {
     lesson_plan_design: '教学设计', classroom_record: '课堂实录', teaching_assets: '教学资源',
   });
@@ -255,7 +176,6 @@ async function handleExperiment(url) {
   const tlist = data.teacher_list || [];
   const teacherName = tlist.length ? tlist[0].name || '' : '';
   const prefix = teacherName ? `[${sanitize(teacherName)}]` : '';
-  // Auto-discover all relation keys
   const tree = parseRelationResources(relations, null, {
     lesson_1: '课程内容', experiment_video: '实验视频',
   });
@@ -263,7 +183,7 @@ async function handleExperiment(url) {
 }
 
 async function handleQualityCourse(url) {
-  let courseId = getUrlParam(url, 'courseId');
+  const courseId = getUrlParam(url, 'courseId');
   if (!courseId) throw new Error('未找到 courseId');
   const apiUrl = url.includes('jpk.basic.smartedu.cn') || url.includes('yearQualityCourse')
     ? `https://s-file-1.ykt.cbern.com.cn/competitive/elite_lesson/resources/${courseId}.json`
@@ -271,7 +191,6 @@ async function handleQualityCourse(url) {
   const data = await fetchJson(apiUrl);
   const title = data.title || '未命名';
   const relations = data.relations || {};
-  // Auto-discover all relation keys
   const tree = parseRelationResources(relations, null, { course_resource: '课程资源' });
   return { title: sanitize(title), tree };
 }
@@ -281,7 +200,6 @@ async function handleThematicCourse(url) {
   if (!contentId) throw new Error('未找到 contentId');
   let foundTitle = '专题课程';
 
-  // First try: fetch as single resource
   try {
     const data = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/resources/details/${contentId}.json`);
     foundTitle = data.title || foundTitle;
@@ -289,18 +207,15 @@ async function handleThematicCourse(url) {
     const format = cp.format || '';
     const size = cp.size || 0;
 
-    // Try relations first (for multi-resource)
     if (data.relations) {
       const tree = parseRelationResources(data.relations, null, {});
       if (tree.length) return { title: sanitize(foundTitle), tree };
     }
 
-    // Fallback to top-level ti_items
     const info = extractUrl(data.ti_items, format, size);
     if (info) return { title: sanitize(foundTitle), tree: [makeFileNode(sanitize(foundTitle), format, info.format, info.url, size)] };
   } catch {}
 
-  // Second try: list endpoint (for thematic courses with multiple resources)
   try {
     const list = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/thematic_course/${contentId}/resources/list.json`);
     const children = [];
@@ -334,6 +249,17 @@ async function handleVideo(url) {
 ipcMain.handle('get-token', () => accessToken);
 ipcMain.handle('set-token', (e, token) => { saveToken(token); return true; });
 
+// ─── IPC: Misc ──────────────────────────────────────────────────────────────
+
+ipcMain.handle('open-external', (e, url) => {
+  if (typeof url === 'string' && /^https?:\/\//.test(url)) {
+    const { shell } = require('electron');
+    shell.openExternal(url);
+    return true;
+  }
+  return false;
+});
+
 // ─── IPC: URL Router ────────────────────────────────────────────────────────
 
 ipcMain.handle('fetch-resource', async (event, pageUrl) => {
@@ -360,7 +286,25 @@ ipcMain.handle('fetch-resource', async (event, pageUrl) => {
 
 // ─── IPC: Batch Download ────────────────────────────────────────────────────
 
-ipcMain.handle('download-files', async (event, { files }) => {
+let activeQueue = null;
+
+function dedupePaths(files) {
+  const seen = new Map();
+  return files.map((f) => {
+    const base = f.relativePath;
+    let rp = base;
+    let n = 2;
+    while (seen.has(rp)) rp = base.replace(/(\.\w+)?$/, `_${n++}$1`);
+    seen.set(rp, true);
+    return { ...f, relativePath: rp };
+  });
+}
+
+function estimateTotalBytes(files) {
+  return files.reduce((sum, f) => sum + (f.size || 0), 0);
+}
+
+ipcMain.handle('download-files', async (event, { files, concurrency }) => {
   const saveDir = await dialog.showOpenDialog(mainWindow, {
     properties: ['openDirectory', 'createDirectory'],
     title: '选择下载保存目录',
@@ -368,35 +312,105 @@ ipcMain.handle('download-files', async (event, { files }) => {
   if (saveDir.canceled) return { success: false, canceled: true };
 
   const destDir = saveDir.filePaths[0];
-  const results = [];
-  let completed = 0;
+  const deduped = dedupePaths(files);
 
-  for (const file of files) {
-    const filePath = path.join(destDir, file.relativePath);
-    const dir = path.dirname(filePath);
-    fs.mkdirSync(dir, { recursive: true });
-
-    try {
-      await new Promise((resolve, reject) => {
-        downloadWithAuth(file.url, filePath, (downloaded, total) => {
-          if (mainWindow && total > 0) {
-            mainWindow.webContents.send('download-progress', {
-              fileName: file.name,
-              percent: Math.round((downloaded / total) * 100),
-              downloaded, total,
-              completed, totalFiles: files.length,
-            });
-          }
-        }).then(resolve).catch(reject);
+  // Best-effort free-disk check (Node ≥ 18.15)
+  try {
+    const st = fs.statfsSync(destDir);
+    const free = st.bavail * st.bsize;
+    const need = estimateTotalBytes(deduped);
+    if (need > 0 && free < need) {
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        buttons: ['继续下载', '取消'],
+        defaultId: 1,
+        title: '磁盘空间不足',
+        message: `目标磁盘可用 ${(free / 1024 / 1024 / 1024).toFixed(1)} GB，本次下载预计需要 ${(need / 1024 / 1024 / 1024).toFixed(2)} GB。`,
       });
-      results.push({ name: path.basename(filePath), success: true, path: filePath });
-    } catch (e) {
-      results.push({ name: file.name, success: false, error: e.message });
+      if (choice.response === 1) return { success: false, canceled: true };
     }
-    completed++;
+  } catch {}
+
+  const batch = {
+    destDir,
+    queue: null,
+    results: [],
+    canceled: false,
+    bytesTotal: 0,
+    bytesDone: 0,
+  };
+
+  activeQueue = batch;
+
+  const queue = new DownloadQueue({
+    concurrency: Math.min(Math.max(parseInt(concurrency, 10) || 4, 1), 8),
+    onProgress: (file, { downloaded, total, speed }) => {
+      batch.bytesTotal = Math.max(batch.bytesTotal, total || 0);
+      if (mainWindow && !batch.canceled) {
+        mainWindow.webContents.send('download-progress', {
+          type: 'file',
+          fileName: file.name,
+          relativePath: file.relativePath,
+          downloaded, total, speed,
+          bytesTotal: batch.bytesTotal,
+          bytesDone: batch.bytesDone + downloaded,
+          completed: queue.stats.completed,
+          totalFiles: queue.stats.total,
+        });
+      }
+    },
+    onFileDone: (file, result) => {
+      batch.results.push({ name: file.name, relativePath: file.relativePath, ...result });
+      batch.bytesDone += result.bytes || 0;
+      if (mainWindow && !batch.canceled) {
+        mainWindow.webContents.send('download-progress', {
+          type: 'file-done',
+          fileName: file.name,
+          relativePath: file.relativePath,
+          success: result.success,
+          error: result.error,
+          bytesDone: batch.bytesDone,
+          bytesTotal: batch.bytesTotal,
+          completed: queue.stats.completed,
+          totalFiles: queue.stats.total,
+        });
+      }
+    },
+  });
+  batch.queue = queue;
+
+  for (const f of deduped) {
+    queue.enqueue({
+      url: f.url,
+      dest: path.join(destDir, f.relativePath),
+      name: f.name,
+      relativePath: f.relativePath,
+      token: accessToken,
+    });
   }
+
+  await queue.whenIdle();
+  activeQueue = null;
+
+  const ok = batch.results.filter((r) => r.success).length;
+  const fail = batch.results.filter((r) => !r.success).length;
   if (mainWindow) {
-    mainWindow.webContents.send('download-progress', { done: true, completed, totalFiles: files.length });
+    mainWindow.webContents.send('download-progress', {
+      type: 'batch-done',
+      canceled: batch.canceled || queue.canceled,
+      results: batch.results,
+      stats: { ok, fail, canceled: queue.stats.canceled },
+      dir: destDir,
+    });
   }
-  return { success: true, results, dir: destDir };
+  return { success: true, results: batch.results, dir: destDir, canceled: batch.canceled || queue.canceled };
+});
+
+ipcMain.handle('cancel-download', () => {
+  if (activeQueue && activeQueue.queue) {
+    activeQueue.canceled = true;
+    activeQueue.queue.cancel();
+    return true;
+  }
+  return false;
 });

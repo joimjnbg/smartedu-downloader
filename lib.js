@@ -232,27 +232,6 @@ function parseRelationResources(relations, relationKeys, labelMap) {
   return tree;
 }
 
-// ─── API endpoint builders ────────────────────────────────────────────────
-
-function getApiUrl(type, id) {
-  const endpoints = {
-    basicWork:      { base: 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/resources/details', ext: '.json' },
-    textbook:       { base: 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrv2/resources/tch_material/details', ext: '.json' },
-    classActivity:  { base: 'https://s-file-2.ykt.cbern.com.cn/zxx/ndrv2/national_lesson/resources/details', ext: '.json' },
-    courseware:     { base: 'https://s-file-2.ykt.cbern.com.cn/zxx/ndrv2/prepare_sub_type/resources/details', ext: '.json' },
-    oneTeacher:     { base: 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrv2/prepare_lesson/resources/details', ext: '.json' },
-    experiment:     { base: 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/experiment/resources/details', ext: '.json' },
-    qualityCourse:  { base: 'https://s-file-1.ykt.cbern.com.cn/competitive/elite_lesson/resources', ext: '.json' },
-    qualityCourse2: { base: 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrv2/resources', ext: '.json' },
-    videoSedu:      { base: 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/resources/details', ext: '.json' },
-    videoWisdom:    { base: 'https://s-file-1.ykt.cbern.com.cn/ldjy/ndrs/special_edu/resources/details', ext: '.json' },
-    thematicCourseList: { base: 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/special_edu/thematic_course', ext: '/resources/list.json' },
-  };
-  const ep = endpoints[type];
-  if (!ep) return null;
-  return `${ep.base}/${id}${ep.ext}`;
-}
-
 // ─── Exports (CommonJS) ───────────────────────────────────────────────────
 
 module.exports = {
@@ -266,5 +245,4 @@ module.exports = {
   makeFileNode,
   parseRelationResources,
   TYPE_LABELS,
-  getApiUrl,
 };

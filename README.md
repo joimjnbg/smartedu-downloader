@@ -11,7 +11,12 @@
 - **支持多种资源类型** — 教材、同步课程、基础作业、课件、一堂课、实验课、精品课、专题课程
 - **自动发现所有资源** — 自动识别 API 返回的所有资源分类，无需硬编码白名单
 - **树形文件选择** — 自动解析资源结构，勾选需要下载的文件
-- **批量下载** — 保持原目录结构，一次性下载所有选中文件
+- **并发批量下载** — 保持原目录结构，同时下载多个文件（可调 1/2/4/8 路并发）
+- **断点续传** — 下载中断后重新下载，从断点继续，无需重头开始；已下载完整的文件自动跳过
+- **失败自动重试** — 网络波动、超时、服务器 5xx/429 时自动指数退避重试；受限资源 401/403 自动携带 Token 重试
+- **可随时取消** — 下载过程中可一键取消整个批次
+- **磁盘空间预检** — 开始下载前检查剩余空间，不足时警告
+- **实时进度** — 总进度按字节计算，显示当前文件、实时下载速度
 - **Access Token** — 设置令牌后可下载受限资源
 - **自动格式适配**
   - 课件/教案（pptx/docx）→ 识别 PDF 回退，自动标注 `[PDF转换]`
@@ -82,11 +87,14 @@ cd smartedu-downloader
 # 安装依赖
 npm install
 
+# 运行测试（纯逻辑层，无需 Electron）
+npm test
+
 # 启动开发模式
 npm start
 
 # 构建分发版
-npm run build:win-x64      # Windows x64 便携版（输出到 dist/）
+npm run build:win-x64      # Windows x64 便携版（输出到 out/）
 npm run build:mac-x64      # macOS Intel
 npm run build:mac-arm64    # macOS Apple Silicon
 npm run build:linux-x64    # Linux x64
@@ -96,34 +104,47 @@ npm run build:linux-x64    # Linux x64
 
 | 命令 | 产物 | 输出路径 |
 |------|------|---------|
-| `npx electron-builder --win portable --x64 --ia32` | Windows x64 + x86 便携版 | `dist/SmartEdu下载器-win-x64.exe` + `dist/SmartEdu下载器-win-ia32.exe` |
 | `npx electron-builder --win portable --x64 --ia32` | Windows x64 + x86 便携版 | `out/SmartEdu下载器-win-x64.exe` + `out/SmartEdu下载器-win-ia32.exe` |
 | `npm run build:win-x64` | Windows x64 便携版 | `out/SmartEdu下载器-win-x64.exe` |
+| `npm run build:win-arm64` | Windows ARM64 便携版 | `out/SmartEdu下载器-win-arm64.exe` |
 | `npm run build:mac-arm64` | macOS ARM (M系列) zip | `out/SmartEdu下载器-mac-arm64.zip` |
 | `npm run build:linux-x64` | Linux AppImage | `out/SmartEdu下载器-linux-x64.AppImage` |
+
+## 测试
+
+纯 Node 测试，无需启动 Electron：
+
+```bash
+npm test
+```
+
+- `tdd-logic.js` — 逻辑层 67 项：URL 类型识别、资源提取、关系解析
+- `tdd-downloader.js` — 下载引擎 19 项：本地 HTTP 服务模拟 5xx 重试、Token 回退、断线续传（Range）、超时、截断检测、并发上限、批量取消
 
 ## 项目结构
 
 ```
 smartedu-downloader/
-├── main.js          # Electron 主进程（IPC路由、下载逻辑、Token管理）
+├── main.js          # Electron 主进程（IPC路由、资源解析、批量下载调度、Token管理）
 ├── lib.js           # 纯逻辑层（URL检测、资源提取、关系解析 — 可脱离Electron测试）
-├── renderer.js      # 渲染进程（UI、树形选择、下载进度）
+├── net.js           # HTTP 客户端层（重试/超时/Token回退 — 可脱离Electron测试）
+├── downloader.js    # 下载引擎（并发队列、断点续传、退避重试、取消 — 可脱离Electron测试）
+├── renderer.js      # 渲染进程（UI、树形选择、下载进度、取消）
 ├── preload.js       # 预加载桥接（IPC通信）
 ├── index.html       # 界面布局
 ├── package.json     # 项目配置
-├── tdd-logic.js     # 逻辑层单元测试（82项）
-├── tdd-suite.js     # HLS AES-128 解密集成测试（20项）
+├── tdd-logic.js     # 逻辑层单元测试（67项）
+├── tdd-downloader.js# 下载引擎测试（19项，本地HTTP服务模拟断线/超时/重试/续传）
 └── icon.png         # 应用图标
 ```
 
 ## 工作原理
 
 1. 粘贴 URL → `detectType()` 识别资源类型
-2. 调用对应 API 端点获取 JSON 数据
+2. 调用对应 API 端点获取 JSON 数据（失败自动重试，受限资源自动携带 Token）
 3. 解析 `ti_items` 中的资源项，提取下载 URL（按质量优先级排序）
 4. 解析 `relations` 中的关系资源（自动发现所有分类，无需硬编码白名单）
-5. 构建资源树 → 用户勾选 → 批量下载
+5. 构建资源树 → 用户勾选 → 并发批量下载（支持断点续传、失败重试、随时取消）
 6. 下载时重试机制：先尝试无认证请求，若 401/403 则使用 Token 重试
 
 ### 支持的 URL 类型
@@ -153,6 +174,7 @@ smartedu-downloader/
 
 - **视频下载**：v1.3.0 起已取消。平台使用 AES-128 + 华为 WAF，无法可靠解密。
 - **课件/教案**：部分资源不再提供源文件（pptx/docx），平台只返回 PDF 转换版，下载后自动标注 `[PDF转换]`
+- **断点续传**：中断后重新选择同一保存目录下载时，已下载部分会自动续传（要求服务器支持 Range）
 - **Access Token**：会保存在本地 `userData/token.json`，重启后仍有效
 
 ## 技术栈

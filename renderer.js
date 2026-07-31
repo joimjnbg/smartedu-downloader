@@ -2,6 +2,7 @@
 const urlInput = document.getElementById('urlInput');
 const btnFetch = document.getElementById('btnFetch');
 const btnDownload = document.getElementById('btnDownload');
+const btnCancel = document.getElementById('btnCancel');
 const btnSelectAll = document.getElementById('btnSelectAll');
 const btnDeselectAll = document.getElementById('btnDeselectAll');
 const resultCard = document.getElementById('resultCard');
@@ -19,8 +20,11 @@ const tokenDialog = document.getElementById('tokenDialog');
 const tokenInput = document.getElementById('tokenInput');
 const btnTokenSave = document.getElementById('btnTokenSave');
 const btnTokenCancel = document.getElementById('btnTokenCancel');
+const concurrencySel = document.getElementById('concurrencySel');
 
 let flatFiles = [];
+let flatById = new Map();
+let fileRows = new Map();
 let accessToken = '';
 
 // ─── Token Management ──────────────────────────────────────────────────────
@@ -62,7 +66,6 @@ btnTokenSave.addEventListener('click', async () => {
   setStatus(token ? 'Token 已保存' : 'Token 已清除', 'info');
 });
 
-// Close dialog on overlay click
 tokenDialog.addEventListener('click', (e) => {
   if (e.target === tokenDialog) tokenDialog.style.display = 'none';
 });
@@ -77,20 +80,25 @@ function setLoading(v) {
   btnFetch.textContent = v ? '解析中...' : '解析';
 }
 
-// ─── Tree Rendering ────────────────────────────────────────────────────────
+// ─── Tree ──────────────────────────────────────────────────────────────────
+// Folders keep a `_children` array of descendant file records (structure-based,
+// no DOM queries per node).
 
 let nodeIdCounter = 0;
 
-function buildFileList(nodes, parentPath) {
+function buildFileList(nodes, parentPath, parentKey) {
   const list = [];
   for (const node of nodes) {
     if (node.type === 'folder') {
       const fp = parentPath ? `${parentPath}/${node.name}` : node.name;
-      list.push(...buildFileList(node.children || [], fp));
+      node._children = [];
+      list.push(...buildFileList(node.children || [], fp, node._children));
     } else {
       const id = ++nodeIdCounter;
       const rp = parentPath ? `${parentPath}/${node.name}` : node.name;
-      list.push({ ...node, id, relativePath: rp, checked: true });
+      const rec = { ...node, id, relativePath: rp, checked: true };
+      if (parentKey) parentKey.push(rec);
+      list.push(rec);
     }
   }
   return list;
@@ -133,26 +141,22 @@ function renderTree(nodes, container, depth) {
       wrapper.appendChild(childrenDiv);
       renderTree(node.children || [], childrenDiv, depth + 1);
 
-      const childCbs = childrenDiv.querySelectorAll('.tree-check');
+      const setFolderChecked = (checked) => {
+        for (const child of node._children || []) child.checked = checked;
+        const inputs = childrenDiv.querySelectorAll('.tree-check');
+        for (const c of inputs) { c.checked = checked; c.indeterminate = false; }
+        updateSelectCount();
+      };
 
-      function updateFolderState() {
-        const checked = childrenDiv.querySelectorAll('.tree-check:checked');
-        const unchecked = childrenDiv.querySelectorAll('.tree-check:not(:checked)');
-        if (checked.length === 0) { cb.checked = false; cb.indeterminate = false; }
-        else if (unchecked.length === 0) { cb.checked = true; cb.indeterminate = false; }
+      const updateFolderState = () => {
+        const children = node._children || [];
+        const checkedCount = children.reduce((n, c) => n + (c.checked ? 1 : 0), 0);
+        if (checkedCount === 0) { cb.checked = false; cb.indeterminate = false; }
+        else if (checkedCount === children.length) { cb.checked = true; cb.indeterminate = false; }
         else { cb.checked = false; cb.indeterminate = true; }
-        updateSelectCount();
-      }
+      };
 
-      cb.addEventListener('change', () => {
-        for (const c of childCbs) { c.checked = cb.checked; c.indeterminate = false; }
-        for (const n of flatFiles) {
-          const rowEl = document.querySelector(`.tree-row[data-fid="${n.id}"]`);
-          if (rowEl && childrenDiv.contains(rowEl)) n.checked = cb.checked;
-        }
-        updateSelectCount();
-      });
-
+      cb.addEventListener('change', () => setFolderChecked(cb.checked));
       childrenDiv.addEventListener('change', updateFolderState);
 
       let expanded = true;
@@ -173,7 +177,6 @@ function renderTree(nodes, container, depth) {
       cb.type = 'checkbox';
       cb.className = 'tree-check';
       cb.checked = true;
-      row.dataset.fid = node.id;
       row.appendChild(cb);
 
       const icon = document.createElement('span');
@@ -208,10 +211,10 @@ function renderTree(nodes, container, depth) {
       wrapper.appendChild(row);
 
       cb.addEventListener('change', () => {
-        const f = flatFiles.find(x => x.id === node.id);
+        const f = flatById.get(node.id);
         if (f) f.checked = cb.checked;
         updateSelectCount();
-        wrapper.closest('.tree-children')?.dispatchEvent(new Event('change'));
+        wrapper.closest('.tree-children')?.dispatchEvent(new Event('change', { bubbles: true }));
       });
     }
 
@@ -220,14 +223,21 @@ function renderTree(nodes, container, depth) {
 }
 
 function updateSelectCount() {
-  const count = flatFiles.filter(f => f.checked).length;
-  selectCount.textContent = `已选 ${count} / ${flatFiles.length}`;
+  selectCount.textContent = `已选 ${flatFiles.length ? flatFiles.filter(f => f.checked).length : 0} / ${flatFiles.length}`;
 }
 
 function formatSize(bytes) {
   if (!bytes) return '';
   const units = ['B', 'KB', 'MB', 'GB'];
   let i = 0, s = bytes;
+  while (s >= 1024 && i < units.length - 1) { s /= 1024; i++; }
+  return s.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+}
+
+function formatSpeed(bps) {
+  if (!bps || bps <= 0) return '';
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+  let i = 0, s = bps;
   while (s >= 1024 && i < units.length - 1) { s /= 1024; i++; }
   return s.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
 }
@@ -250,8 +260,8 @@ btnFetch.addEventListener('click', async () => {
     const data = res.tree || [];
 
     nodeIdCounter = 0;
-    flatFiles = buildFileList(data, '');
-    for (const f of flatFiles) f.checked = true;
+    flatFiles = buildFileList(data, '', null);
+    flatById = new Map(flatFiles.map(f => [f.id, f]));
 
     treeContainer.innerHTML = '';
     renderTree(data, treeContainer, 0);
@@ -284,69 +294,117 @@ btnDeselectAll.addEventListener('click', () => {
 
 // ─── Download ──────────────────────────────────────────────────────────────
 
+function clearDownloadList() {
+  fileRows.clear();
+  downloadList.innerHTML = '<div class="dl-empty">暂无下载记录</div>';
+}
+
+function getFileRow(relativePath, name) {
+  let row = fileRows.get(relativePath);
+  if (!row) {
+    const empty = downloadList.querySelector('.dl-empty');
+    if (empty) empty.remove();
+    row = document.createElement('div');
+    row.className = 'dl-item';
+    row.innerHTML = '<span class="dl-name"></span><span class="dl-status dl">等待中</span>';
+    downloadList.prepend(row);
+    fileRows.set(relativePath, row);
+  }
+  row.querySelector('.dl-name').textContent = sanitize(name || '文件');
+  return row;
+}
+
+function setFileRowState(relativePath, name, statusText, statusClass) {
+  const row = getFileRow(relativePath, name);
+  const s = row.querySelector('.dl-status');
+  s.className = 'dl-status ' + (statusClass || 'dl');
+  s.textContent = statusText;
+}
+
+function updateOverall(d) {
+  if (d.bytesTotal > 0) {
+    progressFill.style.width = Math.min(100, (d.bytesDone / d.bytesTotal) * 100) + '%';
+  } else if (d.totalFiles) {
+    const within = d.downloaded && d.total ? d.downloaded / d.total : 0;
+    progressFill.style.width = Math.min(100, ((d.completed + within) / d.totalFiles) * 100) + '%';
+  }
+  const speedText = d.speed ? ' · ' + formatSpeed(d.speed) : '';
+  if (d.totalFiles) {
+    progressText.textContent = `正在下载 (${Math.min(d.completed + 1, d.totalFiles)}/${d.totalFiles})${speedText}`;
+  }
+  if (d.fileName) progressFile.textContent = d.fileName;
+}
+
 btnDownload.addEventListener('click', async () => {
   const selected = flatFiles.filter(f => f.checked);
   if (!selected.length) return setStatus('请先选择要下载的文件', 'error');
   hideStatus();
 
+  btnDownload.disabled = true;
+  btnFetch.disabled = true;
+  btnCancel.disabled = false;
+  btnCancel.style.display = '';
   progressWrap.style.display = 'block';
   progressFill.style.width = '0%';
   progressText.textContent = '准备下载...';
   progressFile.textContent = '';
-  btnDownload.disabled = true;
+  clearDownloadList();
 
   try {
     const res = await window.api.downloadFiles({
-      files: selected.map(f => ({ url: f.url, name: f.name, relativePath: f.relativePath, format: f.format })),
+      files: selected.map(f => ({ url: f.url, name: f.name, relativePath: f.relativePath, format: f.format, size: f.size })),
+      concurrency: concurrencySel.value,
     });
+
+    if (res.results) {
+      for (const r of res.results) {
+        setFileRowState(r.relativePath, r.name, r.success ? '完成' : (r.error || '失败'), r.success ? 'done' : 'err');
+      }
+    }
 
     if (res.canceled) {
       progressWrap.style.display = 'none';
-      setStatus('已取消下载', 'info');
-      return;
-    }
-
-    if (res.success && res.results) {
+      setStatus('下载已取消', 'info');
+    } else if (res.success) {
       const ok = res.results.filter(r => r.success).length;
-      const fail = res.results.filter(r => !r.success).length;
+      const fail = res.results.length - ok;
       setStatus(`下载完成！成功 ${ok} 个${fail ? `，失败 ${fail} 个` : ''}`, fail ? 'error' : 'success');
       progressFill.style.width = '100%';
       progressText.textContent = `已完成 ${ok + fail} 个文件`;
-
-      for (const r of res.results) {
-        addDownloadItem(r.name, r.success ? '完成' : '失败', r.success ? 'done' : 'err');
-      }
     }
   } catch (e) {
     setStatus('下载出错: ' + e.message, 'error');
   } finally {
     btnDownload.disabled = false;
+    btnFetch.disabled = false;
+    btnCancel.style.display = 'none';
   }
+});
+
+btnCancel.addEventListener('click', () => {
+  btnCancel.disabled = true;
+  progressText.textContent = '正在取消...';
+  window.api.cancelDownload();
 });
 
 window.api.onProgress((data) => {
-  if (data.done) return;
-  if (data.totalFiles) {
-    const overall = ((data.completed + data.percent / 100) / data.totalFiles * 100);
-    progressFill.style.width = Math.min(overall, 100) + '%';
-    progressText.textContent = `正在下载 (${data.completed + 1}/${data.totalFiles})`;
-    progressFile.textContent = data.fileName || '';
-  } else {
-    progressFill.style.width = data.percent + '%';
-    progressText.textContent = `${data.percent}%`;
+  if (data.type === 'file') {
+    updateOverall(data);
+    const s = data.speed ? formatSpeed(data.speed) : '';
+    setFileRowState(data.relativePath, data.fileName, s || '下载中', 'dl');
+  } else if (data.type === 'file-done') {
+    updateOverall(data);
+    setFileRowState(data.relativePath, data.fileName, data.success ? '完成' : (data.error || '失败'), data.success ? 'done' : 'err');
+  } else if (data.type === 'batch-done') {
+    if (data.results) {
+      for (const r of data.results) {
+        setFileRowState(r.relativePath, r.name, r.success ? '完成' : (r.error || '失败'), r.success ? 'done' : 'err');
+      }
+    }
   }
 });
 
-// ─── Download History ──────────────────────────────────────────────────────
-
-function addDownloadItem(name, statusText, statusClass) {
-  const empty = downloadList.querySelector('.dl-empty');
-  if (empty) empty.remove();
-  const div = document.createElement('div');
-  div.className = 'dl-item';
-  div.innerHTML = `<span class="dl-name">${sanitize(name)}</span><span class="dl-status ${statusClass}">${statusText}</span>`;
-  downloadList.prepend(div);
-}
+// ─── Download History helpers ──────────────────────────────────────────────
 
 function sanitize(s) { return s.replace(/[/\\:*?"<>|]/g, '_').trim() || '文件'; }
 

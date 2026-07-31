@@ -11,3 +11,10 @@ test-*.js
 test-*.ts
 test_*
 *.tmp
+el-minimal.js
+publish-release.js
+readme_test.md
+tdd-decrypted.ts
+tdd-electron-test.js
+test-err.txt
+test-out.txt
