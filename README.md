@@ -110,6 +110,9 @@ npm run build:linux-x64    # Linux x64
 | `npm run build:mac-arm64` | macOS ARM (M系列) zip | `out/SmartEdu下载器-mac-arm64.zip` |
 | `npm run build:linux-x64` | Linux AppImage | `out/SmartEdu下载器-linux-x64.AppImage` |
 
+> 每个 build 命令结束后会自动运行 `check:asar` 校验脚本（`node scripts/check-asar.js`），
+> 检查 `main.js` 的依赖是否全部打进 `app.asar`，防止发布后运行时缺模块崩溃。
+
 ## 测试
 
 纯 Node 测试，无需启动 Electron：
