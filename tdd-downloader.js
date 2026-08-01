@@ -182,6 +182,14 @@ async function run() {
     assert('1 attempt on clean download', r.attempts === 1);
   }
 
+  group('1b. Deep subdirectories are created automatically');
+  {
+    const p = dest('语文/七年级/聋校语文下册/聋校语文下册.pdf');
+    const r = await downloadOne(`${baseUrl}/ok`, p, { retryDelayFn: RETRY0 });
+    const data = await fsp.readFile(p);
+    assert('file created inside new subdirs', data.equals(BODY_OK) && r.bytes === BODY_OK.length);
+  }
+
   group('2. Retry on 5xx');
   {
     const r = await downloadOne(`${baseUrl}/flaky`, dest('flaky.bin'), { retryDelayFn: RETRY0, maxRetries: 3 });

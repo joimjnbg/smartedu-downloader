@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const fsp = require('fs').promises;
+const path = require('path');
 const http = require('http');
 const https = require('https');
 const { authHeaders } = require('./net');
@@ -101,6 +102,10 @@ async function downloadOne(url, dest, opts = {}) {
   let usedAuth = false;
   let attempts = 0;
   let finalTotal = null;
+
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+  } catch {}
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     attempts++;
