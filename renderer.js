@@ -28,6 +28,7 @@ const btnLoadCatalog = document.getElementById('btnLoadCatalog');
 const catalogStatusEl = document.getElementById('catalogStatus');
 const catalogTreeWrap = document.getElementById('catalogTreeWrap');
 const catalogTreeEl = document.getElementById('catalogTree');
+const catalogActionsEl = document.getElementById('catalogActions');
 const catalogCountEl = document.getElementById('catalogCount');
 const btnCatalogAdd = document.getElementById('btnCatalogAdd');
 const catalogSearchInput = document.getElementById('catalogSearchInput');
@@ -322,7 +323,7 @@ function getFileRow(relativePath, name) {
     if (empty) empty.remove();
     row = document.createElement('div');
     row.className = 'dl-item';
-    row.innerHTML = '<span class="dl-name"></span><span class="dl-status dl">等待中</span>';
+    row.innerHTML = '<span class="dl-name"></span><span class="dl-status dl">等待中</span><span class="dl-actions"></span>';
     downloadList.prepend(row);
     fileRows.set(relativePath, row);
   }
@@ -337,17 +338,87 @@ function setFileRowState(relativePath, name, statusText, statusClass) {
   s.textContent = statusText;
 }
 
-function friendlyError(err) {
-  if (!err) return '未知错误';
-  if (typeof err !== 'string') return '未知错误';
-  if (/需要登录 Token/.test(err)) return '需要登录 Token，请点右上角🔑设置后重试';
-  if (/^HTTP 401|^HTTP 403/.test(err)) return '无权限（HTTP ' + err.slice(5) + '），Token 无效或已过期';
-  if (/^HTTP 404/.test(err)) return '资源不存在或已下架（HTTP 404）';
-  if (/^HTTP 400/.test(err)) return '资源链接无效（HTTP 400），可能已失效';
-  if (/TIMEOUT/.test(err)) return '下载超时，已自动重试仍失败';
-  if (/ABORTED|aborted|abort/i.test(err)) return '下载中断（网络异常或被取消）';
-  if (/文件不完整/.test(err)) return err;
-  return err;
+function pageUrlFromDl(url) {
+  const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(url || '');
+  return m ? `https://basic.smartedu.cn/tchMaterial/detail?contentType=assets_document&contentId=${m[1]}&catalogType=tchMaterial&subCatalog=tchMaterial` : null;
+}
+
+function buildLogText(r) {
+  const lines = [];
+  lines.push('文件: ' + (r.name || r.relativePath || ''));
+  lines.push('状态: ' + (r.success ? '成功' : '失败'));
+  lines.push('错误: ' + (r.error || '(无)'));
+  if (r.status) lines.push('HTTP状态码: ' + r.status);
+  if (r.url) lines.push('下载地址: ' + r.url);
+  const page = pageUrlFromDl(r.url);
+  if (page) lines.push('网页: ' + page);
+  lines.push('时间: ' + new Date().toLocaleString());
+  if (r.log && r.log.length) {
+    lines.push('请求记录:');
+    for (const l of r.log) {
+      lines.push(`  [第${l.attempt}次] HTTP ${l.status || '-'}${l.error ? ' 错误: ' + l.error : ''} 偏移: ${l.offset || 0} 时间: ${l.at || ''}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function flashBtn(btn, okText, failText, ms) {
+  btn.textContent = okText;
+  btn.classList.add('copied');
+  setTimeout(() => {
+    btn.textContent = failText;
+    btn.classList.remove('copied');
+  }, ms || 1500);
+}
+
+function setFileActions(relativePath, r) {
+  const row = fileRows.get(relativePath);
+  if (!row) return;
+  const actions = row.querySelector('.dl-actions');
+  actions.innerHTML = '';
+  if (!r) return;
+
+  const btnCopy = document.createElement('button');
+  btnCopy.className = 'dl-btn';
+  btnCopy.textContent = '📋';
+  btnCopy.title = '复制完整错误日志（含下载地址）';
+  btnCopy.addEventListener('click', async () => {
+    const ok = await copyToClipboard(buildLogText(r));
+    flashBtn(btnCopy, ok ? '已复制' : '复制失败', '📋');
+  });
+  actions.appendChild(btnCopy);
+
+  const page = pageUrlFromDl(r.url);
+  const btnPage = document.createElement('button');
+  btnPage.className = 'dl-btn';
+  btnPage.textContent = '🔗';
+  btnPage.title = page ? '在浏览器打开该资源页面' : '复制下载地址';
+  btnPage.addEventListener('click', () => {
+    if (page) window.api.openExternal(page);
+    else copyToClipboard(r.url || '').then((ok) => flashBtn(btnPage, ok ? '已复制' : '复制失败', '🔗'));
+  });
+  actions.appendChild(btnPage);
+
+  row.title = buildLogText(r);
 }
 
 function updateRetryButton(results) {
@@ -396,12 +467,9 @@ btnDownload.addEventListener('click', async () => {
 
     if (res.results) {
       for (const r of res.results) {
-        const errText = r.success ? '' : friendlyError(r.error);
+        const errText = r.success ? '' : (r.error || '下载失败');
         setFileRowState(r.relativePath, r.name, r.success ? '完成' : errText, r.success ? 'done' : 'err');
-        if (!r.success && r.url) {
-          const row = fileRows.get(r.relativePath);
-          if (row) row.title = errText + '\n' + r.url;
-        }
+        setFileActions(r.relativePath, r);
       }
     }
 
@@ -438,23 +506,15 @@ window.api.onProgress((data) => {
     setFileRowState(data.relativePath, data.fileName, s || '下载中', 'dl');
   } else if (data.type === 'file-done') {
     updateOverall(data);
-    const errText = data.success ? '' : friendlyError(data.error);
+    const errText = data.success ? '' : (data.error || '下载失败');
     setFileRowState(data.relativePath, data.fileName, data.success ? '完成' : errText, data.success ? 'done' : 'err');
-    if (!data.success) {
-      const row = fileRows.get(data.relativePath);
-      if (row && data.error && /401|403|Token/.test(data.error)) {
-        row.title = errText;
-      }
-    }
+    setFileActions(data.relativePath, { success: data.success, error: data.error, status: data.status, url: (data.url || ''), log: data.log });
   } else if (data.type === 'batch-done') {
     if (data.results) {
       for (const r of data.results) {
-        const errText = r.success ? '' : friendlyError(r.error);
+        const errText = r.success ? '' : (r.error || '下载失败');
         setFileRowState(r.relativePath, r.name, r.success ? '完成' : errText, r.success ? 'done' : 'err');
-        if (!r.success && r.url) {
-          const row = fileRows.get(r.relativePath);
-          if (row) row.title = errText + '\n' + r.url;
-        }
+        setFileActions(r.relativePath, r);
       }
       if (!data.canceled) updateRetryButton(data.results);
     }
@@ -672,6 +732,7 @@ btnLoadCatalog.addEventListener('click', async () => {
     if (!treeRes.success) return setCatalogStatus('目录解析失败: ' + treeRes.error, 'error');
     renderCatalogTree(treeRes.tree);
     catalogTreeWrap.style.display = 'block';
+    catalogActionsEl.style.display = 'flex';
     const scope = treeRes.tagPath && treeRes.tagPath.length
       ? `，当前分类范围 ${treeRes.tagPath.length} 层`
       : '，显示全部教材';
@@ -792,6 +853,7 @@ async function runCatalogSearch() {
     }
     renderSearchResults(res.items, res.total);
     catalogSearchResults.style.display = 'block';
+    catalogActionsEl.style.display = 'flex';
   } catch (e) {
     catalogSearchInfo.textContent = '搜索出错: ' + e.message;
   } finally {

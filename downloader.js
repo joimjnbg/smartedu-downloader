@@ -102,10 +102,11 @@ async function downloadOne(url, dest, opts = {}) {
   let usedAuth = false;
   let attempts = 0;
   let finalTotal = null;
+  const attemptLog = [];
 
   const fail = (msg, extra = {}) => {
     const e = new Error(msg);
-    Object.assign(e, { stage: 'download', url, status: 0, attempts, ...extra });
+    Object.assign(e, { stage: 'download', url, status: 0, attempts, attemptLog, ...extra });
     throw e;
   };
 
@@ -124,6 +125,7 @@ async function downloadOne(url, dest, opts = {}) {
 
     const r = await streamOnce(url, dest, { headers, signal, timeoutMs, offset, onProgress });
     if (r.total != null) finalTotal = offset + r.total;
+    attemptLog.push({ attempt, status: r.status || 0, error: r.error ? r.error.message : null, offset, at: new Date().toISOString() });
 
     if (r.ok) {
       const nowSize = (st ? st.size : 0) + r.received;
@@ -131,11 +133,11 @@ async function downloadOne(url, dest, opts = {}) {
         if (attempt < maxRetries) { await sleep(retryDelayFn(attempt)); continue; }
         fail(`文件不完整: 收到 ${r.received}/${r.total} 字节`, { status: r.status });
       }
-      return { bytes: nowSize, attempts, total: finalTotal, alreadyComplete: false };
+      return { bytes: nowSize, attempts, total: finalTotal, alreadyComplete: false, attemptLog };
     }
 
     if (r.status === 416) {
-      return { bytes: offset, attempts, total: offset, alreadyComplete: true };
+      return { bytes: offset, attempts, total: offset, alreadyComplete: true, attemptLog };
     }
     if (r.restart) {
       await fsp.rm(dest, { force: true });
@@ -242,7 +244,15 @@ class DownloadQueue {
         this.stats.canceled++;
       } else {
         this.stats.failed++;
-        this.onFileDone(file, { success: false, error: err.message, attempts: err.attempts || 0, ms: Date.now() - startedAt });
+        this.onFileDone(file, {
+          success: false,
+          error: err.message,
+          status: err.status || 0,
+          stage: err.stage || '',
+          attempts: err.attempts || 0,
+          log: err.attemptLog || [],
+          ms: Date.now() - startedAt,
+        });
       }
     } finally {
       this._speeds.delete(file.__id);

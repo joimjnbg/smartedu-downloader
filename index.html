@@ -57,13 +57,17 @@ button:disabled { opacity:.5; cursor:not-allowed; }
 
 .dl-card { padding:12px 20px; }
 .dl-card h3 { font-size:13px; margin-bottom:8px; color:#666; }
-.dl-item { display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid #f5f5f5; font-size:12px; }
+.dl-item { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid #f5f5f5; font-size:12px; }
 .dl-item:last-child { border-bottom:none; }
 .dl-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.dl-status { font-size:11px; padding:1px 6px; border-radius:3px; }
+.dl-status { font-size:11px; padding:1px 6px; border-radius:3px; max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dl-status.done { background:#dcfce7; color:#16a34a; }
 .dl-status.dl { background:#dbeafe; color:#2563eb; }
 .dl-status.err { background:#fef2f2; color:#dc2626; }
+.dl-actions { display:flex; gap:4px; flex-shrink:0; }
+.dl-btn { font-size:10px; padding:1px 6px; border:none; border-radius:4px; background:#f0f0f0; cursor:pointer; color:#555; white-space:nowrap; }
+.dl-btn:hover { background:#e0e0e0; }
+.dl-btn.copied { background:#dcfce7; color:#16a34a; }
 .dl-empty { color:#999; font-size:13px; text-align:center; padding:8px 0; }
 </style>
 </head>
@@ -101,11 +105,11 @@ button:disabled { opacity:.5; cursor:not-allowed; }
     <div id="catalogSearchResults" class="tree" style="max-height:240px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:6px;margin-top:8px;display:none"></div>
     <div id="catalogTreeWrap" style="display:none">
       <div id="catalogTree" class="tree" style="max-height:320px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:6px;margin-top:10px"></div>
-      <div style="display:flex;align-items:center;margin-top:10px;gap:8px">
-        <span id="catalogCount" style="font-size:12px;color:#666"></span>
-        <span style="flex:1"></span>
-        <button id="btnCatalogAdd" class="btn-success btn-sm">将选中教材加入下载列表</button>
-      </div>
+    </div>
+    <div id="catalogActions" style="display:none;align-items:center;margin-top:10px;gap:8px">
+      <span id="catalogCount" style="font-size:12px;color:#666"></span>
+      <span style="flex:1"></span>
+      <button id="btnCatalogAdd" class="btn-success btn-sm">将选中教材加入下载列表</button>
     </div>
   </div>
 
