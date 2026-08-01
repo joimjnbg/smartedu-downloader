@@ -514,6 +514,22 @@ ipcMain.handle('catalog:tree', (event, defaultTag) => {
   }
 });
 
+ipcMain.handle('catalog:search', (event, query) => {
+  try {
+    if (!catalogStore) throw new Error('请先加载目录');
+    const hits = catalog.searchBooks(catalogStore.books, query);
+    const items = hits.slice(0, 300).map((b) => ({
+      id: b.id,
+      title: b.title,
+      publisher: (b.provider_list && b.provider_list[0] && b.provider_list[0].name) || '',
+      path: catalog.bookPath(b),
+    }));
+    return { success: true, total: hits.length, shown: items.length, items };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 ipcMain.handle('catalog:books', async (event, list) => {
   try {
     const items = Array.isArray(list) ? list : [];

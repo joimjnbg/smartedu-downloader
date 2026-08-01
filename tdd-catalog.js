@@ -7,6 +7,8 @@ const {
   buildTree,
   countBooks,
   collectBooks,
+  bookPath,
+  searchBooks,
 } = require('./catalog');
 
 let passed = 0;
@@ -145,6 +147,55 @@ ok('countBooks: 与 collectBooks 一致', () => {
   const tree = buildTree(books);
   assert.strictEqual(countBooks(tree), collectBooks(tree).length);
   assert.strictEqual(countBooks(tree), 5);
+});
+
+// ─── searchBooks / bookPath ─────────────────────────────────────────────────
+
+ok('bookPath: 按维度拼接分类路径', () => {
+  assert.strictEqual(bookPath(books[0]), '小学/语文/统编版/一年级/上册');
+  assert.strictEqual(bookPath(books[4]), '语文/统编版/一年级');
+});
+
+ok('searchBooks: 按书名匹配', () => {
+  const r = searchBooks(books, '数学');
+  assert.strictEqual(r.length, 1);
+  assert.strictEqual(r[0].id, 'b3');
+});
+
+ok('searchBooks: 按学科 tag 匹配', () => {
+  const r = searchBooks(books, '语文');
+  assert.strictEqual(r.length, 4); // b1 b2 b4 b5（b5 也有语文 tag）
+});
+
+ok('searchBooks: 多关键字空格分隔全部命中', () => {
+  const r = searchBooks(books, '小学 一年级');
+  assert.strictEqual(r.length, 3); // b1 b2 b3
+});
+
+ok('searchBooks: 按出版社匹配', () => {
+  const r = searchBooks(books, '某出版社');
+  assert.strictEqual(r.length, 5);
+});
+
+ok('searchBooks: 大小写不敏感（英文书名）', () => {
+  const withEn = [book('e1', 'English Textbook', [STAGE_XIAO, T('k-en', 'English', 'zxxxk')])];
+  const r = searchBooks(withEn, 'english');
+  assert.strictEqual(r.length, 1);
+});
+
+ok('searchBooks: 相关性排序（书名命中优先）', () => {
+  const r = searchBooks(books, '语文');
+  assert.strictEqual(r[0].id, 'b1'); // 书名含"语文"排前面
+});
+
+ok('searchBooks: 空查询返回空', () => {
+  assert.strictEqual(searchBooks(books, '').length, 0);
+  assert.strictEqual(searchBooks(books, '   ').length, 0);
+  assert.strictEqual(searchBooks(books, null).length, 0);
+});
+
+ok('searchBooks: 无匹配返回空', () => {
+  assert.strictEqual(searchBooks(books, '不存在的书').length, 0);
 });
 
 console.log(`\ncatalog: ${passed} passed`);

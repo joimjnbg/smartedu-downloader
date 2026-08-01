@@ -63,6 +63,39 @@ function bookSummary(book) {
   };
 }
 
+function bookPath(book) {
+  const parts = [];
+  for (const dim of DIMENSION_ORDER) {
+    const t = pickTag(book, dim);
+    if (t && t.name) parts.push(t.name);
+  }
+  return parts.join('/');
+}
+
+function searchBooks(books, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return [];
+  const terms = q.split(/\s+/).filter(Boolean);
+  const hits = [];
+  for (const b of books) {
+    const title = String(b.title || '').toLowerCase();
+    const pub = String((b.provider_list && b.provider_list[0] && b.provider_list[0].name) || '').toLowerCase();
+    const tags = (b.tag_list || []).map((t) => String(t.tag_name || '').toLowerCase()).filter(Boolean);
+    const fields = [title, pub, ...tags];
+    if (terms.every((t) => fields.some((f) => f.includes(t)))) {
+      let score = 0;
+      for (const t of terms) {
+        if (title.includes(t)) score += 3;
+        if (tags.includes(t)) score += 2;
+        if (pub.includes(t)) score += 1;
+      }
+      hits.push({ book: b, score });
+    }
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits.map((h) => h.book);
+}
+
 function buildTree(books) {
   const root = { name: '全部教材', count: books.length, children: [], books: [] };
   const insert = (node, book, depth) => {
@@ -124,4 +157,6 @@ module.exports = {
   collectBooks,
   pickTag,
   bookSummary,
+  bookPath,
+  searchBooks,
 };

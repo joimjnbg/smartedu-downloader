@@ -30,6 +30,10 @@ const catalogTreeWrap = document.getElementById('catalogTreeWrap');
 const catalogTreeEl = document.getElementById('catalogTree');
 const catalogCountEl = document.getElementById('catalogCount');
 const btnCatalogAdd = document.getElementById('btnCatalogAdd');
+const catalogSearchInput = document.getElementById('catalogSearchInput');
+const btnCatalogSearch = document.getElementById('btnCatalogSearch');
+const catalogSearchInfo = document.getElementById('catalogSearchInfo');
+const catalogSearchResults = document.getElementById('catalogSearchResults');
 
 let flatFiles = [];
 let flatById = new Map();
@@ -724,6 +728,80 @@ window.api.onCatalogProgress((d) => {
   if (btnCatalogAdd.disabled) {
     setCatalogStatus(`正在解析教材 ${Math.min(d.done + 1, d.total)}/${d.total}...`, 'info');
   }
+});
+
+// ─── Catalog search ─────────────────────────────────────────────────────────
+
+let searchResultIds = [];
+
+function renderSearchResults(items, total) {
+  searchResultIds = items.map((i) => i.id);
+  catalogSearchResults.innerHTML = '';
+  catalogSearchInfo.textContent = `共匹配 ${total} 本${total > items.length ? `，显示前 ${items.length} 本（可输入更精确的关键字缩小范围）` : ''}`;
+  for (const item of items) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'tree-row';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'tree-check';
+    cb.checked = catalogSelected.has(item.id);
+    wrapper.appendChild(cb);
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.textContent = '📕';
+    wrapper.appendChild(icon);
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    name.textContent = item.title;
+    wrapper.appendChild(name);
+    if (item.publisher) {
+      const pub = document.createElement('span');
+      pub.className = 'tree-fmt';
+      pub.textContent = item.publisher;
+      wrapper.appendChild(pub);
+    }
+    const path = document.createElement('span');
+    path.className = 'tree-size';
+    path.textContent = item.path;
+    path.style.fontSize = '11px';
+    path.style.color = '#aaa';
+    wrapper.appendChild(path);
+    cb.addEventListener('change', () => {
+      if (cb.checked) catalogSelected.set(item.id, { id: item.id, title: item.title, path: item.path + '/' + item.title });
+      else catalogSelected.delete(item.id);
+      updateCatalogCount();
+    });
+    catalogSearchResults.appendChild(wrapper);
+  }
+}
+
+async function runCatalogSearch() {
+  const q = catalogSearchInput.value.trim();
+  if (!q) {
+    catalogSearchInfo.textContent = '';
+    catalogSearchResults.style.display = 'none';
+    return;
+  }
+  btnCatalogSearch.disabled = true;
+  catalogSearchInfo.textContent = '搜索中...';
+  try {
+    const res = await window.api.searchCatalog(q);
+    if (!res.success) {
+      catalogSearchInfo.textContent = '搜索失败: ' + res.error;
+      return;
+    }
+    renderSearchResults(res.items, res.total);
+    catalogSearchResults.style.display = 'block';
+  } catch (e) {
+    catalogSearchInfo.textContent = '搜索出错: ' + e.message;
+  } finally {
+    btnCatalogSearch.disabled = false;
+  }
+}
+
+btnCatalogSearch.addEventListener('click', runCatalogSearch);
+catalogSearchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') runCatalogSearch();
 });
 
 // ─── Init ──────────────────────────────────────────────────────────────────
