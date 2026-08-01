@@ -496,7 +496,18 @@ function renderCatalogNode(node, container, parents, force) {
       updateCatalogCount();
     };
 
-    cb.addEventListener('change', () => setFolderChecked(cb.checked));
+    cb.addEventListener('mousedown', () => {
+      cb.dataset.wasInd = cb.indeterminate ? '1' : '0';
+    });
+    cb.addEventListener('change', () => {
+      if (cb.dataset.wasInd === '1') {
+        cb.checked = false;
+        setFolderChecked(false);
+      } else {
+        setFolderChecked(cb.checked);
+      }
+      wrapper.closest('.tree-children')?.dispatchEvent(new Event('change', { bubbles: true }));
+    });
     childrenDiv.addEventListener('change', updateFolderCheckbox);
 
     let rendered = force;
@@ -595,6 +606,14 @@ btnLoadCatalog.addEventListener('click', async () => {
 btnCatalogAdd.addEventListener('click', async () => {
   const selected = [...catalogSelected.values()];
   if (!selected.length) return setCatalogStatus('请先勾选要下载的教材', 'error');
+  const dist = new Map();
+  for (const s of selected) {
+    const top = String(s.path).split('/').filter(Boolean)[0] || '其他';
+    dist.set(top, (dist.get(top) || 0) + 1);
+  }
+  const breakdown = [...dist.entries()].map(([k, v]) => `  ${k}：${v} 本`).join('\n');
+  const ok = window.confirm(`即将解析 ${selected.length} 本教材并加入下载列表：\n\n${breakdown}\n\n确认继续？`);
+  if (!ok) return;
   btnCatalogAdd.disabled = true;
   btnCatalogAdd.textContent = '解析中...';
   setCatalogStatus(`正在解析 ${selected.length} 本教材（每本需联网获取下载地址）...`, 'info');
