@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   fetchResource: (url) => ipcRenderer.invoke('fetch-resource', url),
   downloadFiles: (opts) => ipcRenderer.invoke('download-files', opts),
+  retryFailed: (opts) => ipcRenderer.invoke('retry-failed', opts),
   cancelDownload: () => ipcRenderer.invoke('cancel-download'),
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   onProgress: (cb) => {

@@ -206,6 +206,17 @@ async function run() {
     assert('first request unauthenticated, second authenticated', authSeen[0] === false && authSeen[1] === true);
   }
 
+  group('3b. 401 without token gives friendly error with stage/status/url');
+  {
+    let err = null;
+    try { await downloadOne(`${baseUrl}/auth`, dest('noauth.bin'), { retryDelayFn: RETRY0, maxRetries: 0 }); }
+    catch (e) { err = e; }
+    assert('throws with Token hint', !!err && /Token/.test(err.message));
+    assert('error carries stage', !!err && err.stage === 'download');
+    assert('error carries status 401', !!err && err.status === 401);
+    assert('error carries url', !!err && err.url === `${baseUrl}/auth`);
+  }
+
   group('4. Range resume after interrupted download');
   {
     const p = dest('range.bin');

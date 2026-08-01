@@ -2,6 +2,8 @@
 const urlInput = document.getElementById('urlInput');
 const btnFetch = document.getElementById('btnFetch');
 const btnDownload = document.getElementById('btnDownload');
+const btnRetryFailed = document.getElementById('btnRetryFailed');
+const retryHint = document.getElementById('retryHint');
 const btnCancel = document.getElementById('btnCancel');
 const btnSelectAll = document.getElementById('btnSelectAll');
 const btnDeselectAll = document.getElementById('btnDeselectAll');
@@ -305,6 +307,8 @@ btnDeselectAll.addEventListener('click', () => {
 function clearDownloadList() {
   fileRows.clear();
   downloadList.innerHTML = '<div class="dl-empty">暂无下载记录</div>';
+  btnRetryFailed.style.display = 'none';
+  retryHint.style.display = 'none';
 }
 
 function getFileRow(relativePath, name) {
@@ -327,6 +331,28 @@ function setFileRowState(relativePath, name, statusText, statusClass) {
   const s = row.querySelector('.dl-status');
   s.className = 'dl-status ' + (statusClass || 'dl');
   s.textContent = statusText;
+}
+
+function friendlyError(err) {
+  if (!err) return '未知错误';
+  if (typeof err !== 'string') return '未知错误';
+  if (/需要登录 Token/.test(err)) return '需要登录 Token，请点右上角🔑设置后重试';
+  if (/^HTTP 401|^HTTP 403/.test(err)) return '无权限（HTTP ' + err.slice(5) + '），Token 无效或已过期';
+  if (/^HTTP 404/.test(err)) return '资源不存在或已下架（HTTP 404）';
+  if (/^HTTP 400/.test(err)) return '资源链接无效（HTTP 400），可能已失效';
+  if (/TIMEOUT/.test(err)) return '下载超时，已自动重试仍失败';
+  if (/ABORTED|aborted|abort/i.test(err)) return '下载中断（网络异常或被取消）';
+  if (/文件不完整/.test(err)) return err;
+  return err;
+}
+
+function updateRetryButton(results) {
+  const failed = (results || []).filter((r) => !r.success && r.url);
+  const hasTokenIssue = failed.some((r) => /401|403|Token/.test(r.error || ''));
+  btnRetryFailed.style.display = failed.length ? '' : 'none';
+  btnRetryFailed.textContent = `重试失败 ${failed.length} 个`;
+  btnRetryFailed.dataset.count = String(failed.length);
+  retryHint.style.display = hasTokenIssue ? '' : 'none';
 }
 
 function updateOverall(d) {
@@ -366,7 +392,12 @@ btnDownload.addEventListener('click', async () => {
 
     if (res.results) {
       for (const r of res.results) {
-        setFileRowState(r.relativePath, r.name, r.success ? '完成' : (r.error || '失败'), r.success ? 'done' : 'err');
+        const errText = r.success ? '' : friendlyError(r.error);
+        setFileRowState(r.relativePath, r.name, r.success ? '完成' : errText, r.success ? 'done' : 'err');
+        if (!r.success && r.url) {
+          const row = fileRows.get(r.relativePath);
+          if (row) row.title = errText + '\n' + r.url;
+        }
       }
     }
 
@@ -379,6 +410,7 @@ btnDownload.addEventListener('click', async () => {
       setStatus(`下载完成！成功 ${ok} 个${fail ? `，失败 ${fail} 个` : ''}`, fail ? 'error' : 'success');
       progressFill.style.width = '100%';
       progressText.textContent = `已完成 ${ok + fail} 个文件`;
+      updateRetryButton(res.results);
     }
   } catch (e) {
     setStatus('下载出错: ' + e.message, 'error');
@@ -402,13 +434,57 @@ window.api.onProgress((data) => {
     setFileRowState(data.relativePath, data.fileName, s || '下载中', 'dl');
   } else if (data.type === 'file-done') {
     updateOverall(data);
-    setFileRowState(data.relativePath, data.fileName, data.success ? '完成' : (data.error || '失败'), data.success ? 'done' : 'err');
+    const errText = data.success ? '' : friendlyError(data.error);
+    setFileRowState(data.relativePath, data.fileName, data.success ? '完成' : errText, data.success ? 'done' : 'err');
+    if (!data.success) {
+      const row = fileRows.get(data.relativePath);
+      if (row && data.error && /401|403|Token/.test(data.error)) {
+        row.title = errText;
+      }
+    }
   } else if (data.type === 'batch-done') {
     if (data.results) {
       for (const r of data.results) {
-        setFileRowState(r.relativePath, r.name, r.success ? '完成' : (r.error || '失败'), r.success ? 'done' : 'err');
+        const errText = r.success ? '' : friendlyError(r.error);
+        setFileRowState(r.relativePath, r.name, r.success ? '完成' : errText, r.success ? 'done' : 'err');
+        if (!r.success && r.url) {
+          const row = fileRows.get(r.relativePath);
+          if (row) row.title = errText + '\n' + r.url;
+        }
       }
+      if (!data.canceled) updateRetryButton(data.results);
     }
+  }
+});
+
+btnRetryFailed.addEventListener('click', async () => {
+  const count = parseInt(btnRetryFailed.dataset.count || '0', 10);
+  if (!count) return;
+  btnRetryFailed.disabled = true;
+  btnRetryFailed.textContent = '重试中...';
+  progressWrap.style.display = 'block';
+  progressFill.style.width = '0%';
+  progressText.textContent = `正在重试 ${count} 个失败文件...`;
+  progressFile.textContent = '';
+  setStatus('正在重试失败文件...', 'info');
+  try {
+    const res = await window.api.retryFailed({ concurrency: concurrencySel.value });
+    if (res.canceled) {
+      progressWrap.style.display = 'none';
+      setStatus('重试已取消', 'info');
+    } else if (res.success) {
+      const ok = res.results.filter(r => r.success).length;
+      const fail = res.results.length - ok;
+      setStatus(`重试完成！成功 ${ok} 个${fail ? `，仍失败 ${fail} 个` : ''}`, fail ? 'error' : 'success');
+      progressFill.style.width = '100%';
+      progressText.textContent = `重试完成 ${res.results.length} 个`;
+    } else {
+      setStatus('重试失败: ' + (res.error || '未知错误'), 'error');
+    }
+  } catch (e) {
+    setStatus('重试出错: ' + e.message, 'error');
+  } finally {
+    btnRetryFailed.disabled = false;
   }
 });
 

@@ -293,6 +293,7 @@ ipcMain.handle('fetch-resource', async (event, pageUrl) => {
 // ─── IPC: Batch Download ────────────────────────────────────────────────────
 
 let activeQueue = null;
+let lastBatch = null;
 
 function dedupePaths(files) {
   const seen = new Map();
@@ -308,6 +309,69 @@ function dedupePaths(files) {
 
 function estimateTotalBytes(files) {
   return files.reduce((sum, f) => sum + (f.size || 0), 0);
+}
+
+function startQueue(batch, files, concurrency) {
+  const queue = new DownloadQueue({
+    concurrency: Math.min(Math.max(parseInt(concurrency, 10) || 4, 1), 8),
+    onProgress: (file, { downloaded, total, speed }) => {
+      batch.bytesTotal = Math.max(batch.bytesTotal, total || 0);
+      if (mainWindow && !batch.canceled) {
+        mainWindow.webContents.send('download-progress', {
+          type: 'file',
+          fileName: file.name,
+          relativePath: file.relativePath,
+          downloaded, total, speed,
+          bytesTotal: batch.bytesTotal,
+          bytesDone: batch.bytesDone + downloaded,
+          completed: queue.stats.completed,
+          totalFiles: queue.stats.total,
+        });
+      }
+    },
+    onFileDone: (file, result) => {
+      batch.results.push({ name: file.name, relativePath: file.relativePath, url: file.url, ...result });
+      batch.bytesDone += result.bytes || 0;
+      if (mainWindow && !batch.canceled) {
+        mainWindow.webContents.send('download-progress', {
+          type: 'file-done',
+          fileName: file.name,
+          relativePath: file.relativePath,
+          success: result.success,
+          error: result.error,
+          bytesDone: batch.bytesDone,
+          bytesTotal: batch.bytesTotal,
+          completed: queue.stats.completed,
+          totalFiles: queue.stats.total,
+        });
+      }
+    },
+  });
+  batch.queue = queue;
+
+  for (const f of files) {
+    queue.enqueue({
+      url: f.url,
+      dest: path.join(batch.destDir, f.relativePath),
+      name: f.name,
+      relativePath: f.relativePath,
+      token: accessToken,
+    });
+  }
+  return queue;
+}
+
+function sendBatchDone(batch, queue) {
+  if (!mainWindow) return;
+  const ok = batch.results.filter((r) => r.success).length;
+  const fail = batch.results.filter((r) => !r.success).length;
+  mainWindow.webContents.send('download-progress', {
+    type: 'batch-done',
+    canceled: batch.canceled || queue.canceled,
+    results: batch.results,
+    stats: { ok, fail, canceled: queue.stats.canceled },
+    dir: batch.destDir,
+  });
 }
 
 ipcMain.handle('download-files', async (event, { files, concurrency }) => {
@@ -347,69 +411,42 @@ ipcMain.handle('download-files', async (event, { files, concurrency }) => {
   };
 
   activeQueue = batch;
-
-  const queue = new DownloadQueue({
-    concurrency: Math.min(Math.max(parseInt(concurrency, 10) || 4, 1), 8),
-    onProgress: (file, { downloaded, total, speed }) => {
-      batch.bytesTotal = Math.max(batch.bytesTotal, total || 0);
-      if (mainWindow && !batch.canceled) {
-        mainWindow.webContents.send('download-progress', {
-          type: 'file',
-          fileName: file.name,
-          relativePath: file.relativePath,
-          downloaded, total, speed,
-          bytesTotal: batch.bytesTotal,
-          bytesDone: batch.bytesDone + downloaded,
-          completed: queue.stats.completed,
-          totalFiles: queue.stats.total,
-        });
-      }
-    },
-    onFileDone: (file, result) => {
-      batch.results.push({ name: file.name, relativePath: file.relativePath, ...result });
-      batch.bytesDone += result.bytes || 0;
-      if (mainWindow && !batch.canceled) {
-        mainWindow.webContents.send('download-progress', {
-          type: 'file-done',
-          fileName: file.name,
-          relativePath: file.relativePath,
-          success: result.success,
-          error: result.error,
-          bytesDone: batch.bytesDone,
-          bytesTotal: batch.bytesTotal,
-          completed: queue.stats.completed,
-          totalFiles: queue.stats.total,
-        });
-      }
-    },
-  });
-  batch.queue = queue;
-
-  for (const f of deduped) {
-    queue.enqueue({
-      url: f.url,
-      dest: path.join(destDir, f.relativePath),
-      name: f.name,
-      relativePath: f.relativePath,
-      token: accessToken,
-    });
-  }
+  lastBatch = batch;
+  const queue = startQueue(batch, deduped, concurrency);
 
   await queue.whenIdle();
-  activeQueue = null;
-
-  const ok = batch.results.filter((r) => r.success).length;
-  const fail = batch.results.filter((r) => !r.success).length;
-  if (mainWindow) {
-    mainWindow.webContents.send('download-progress', {
-      type: 'batch-done',
-      canceled: batch.canceled || queue.canceled,
-      results: batch.results,
-      stats: { ok, fail, canceled: queue.stats.canceled },
-      dir: destDir,
-    });
-  }
+  if (activeQueue === batch) activeQueue = null;
+  sendBatchDone(batch, queue);
   return { success: true, results: batch.results, dir: destDir, canceled: batch.canceled || queue.canceled };
+});
+
+ipcMain.handle('retry-failed', async (event, { concurrency }) => {
+  if (!lastBatch) return { success: false, error: '没有可重试的下载记录' };
+  const failed = lastBatch.results.filter((r) => !r.success && r.url);
+  if (!failed.length) return { success: false, error: '没有失败的文件' };
+  if (activeQueue && activeQueue.queue) return { success: false, error: '已有下载正在进行' };
+
+  const batch = {
+    destDir: lastBatch.destDir,
+    queue: null,
+    results: [],
+    canceled: false,
+    bytesTotal: 0,
+    bytesDone: 0,
+  };
+  activeQueue = batch;
+  const files = failed.map((r) => ({
+    url: r.url,
+    name: r.name,
+    relativePath: r.relativePath,
+    format: '',
+    size: 0,
+  }));
+  const queue = startQueue(batch, files, concurrency);
+  await queue.whenIdle();
+  if (activeQueue === batch) activeQueue = null;
+  sendBatchDone(batch, queue);
+  return { success: true, results: batch.results, dir: batch.destDir, canceled: batch.canceled || queue.canceled };
 });
 
 ipcMain.handle('cancel-download', () => {

@@ -103,6 +103,12 @@ async function downloadOne(url, dest, opts = {}) {
   let attempts = 0;
   let finalTotal = null;
 
+  const fail = (msg, extra = {}) => {
+    const e = new Error(msg);
+    Object.assign(e, { stage: 'download', url, status: 0, attempts, ...extra });
+    throw e;
+  };
+
   try {
     fs.mkdirSync(path.dirname(dest), { recursive: true });
   } catch {}
@@ -123,7 +129,7 @@ async function downloadOne(url, dest, opts = {}) {
       const nowSize = (st ? st.size : 0) + r.received;
       if (r.total != null && r.received < r.total) {
         if (attempt < maxRetries) { await sleep(retryDelayFn(attempt)); continue; }
-        throw new Error(`文件不完整: 收到 ${r.received}/${r.total} 字节`);
+        fail(`文件不完整: 收到 ${r.received}/${r.total} 字节`, { status: r.status });
       }
       return { bytes: nowSize, attempts, total: finalTotal, alreadyComplete: false };
     }
@@ -134,20 +140,20 @@ async function downloadOne(url, dest, opts = {}) {
     if (r.restart) {
       await fsp.rm(dest, { force: true });
       if (attempt < maxRetries) continue;
-      throw new Error('服务器不支持 Range，重试后仍失败');
+      fail('服务器不支持 Range，重试后仍失败', { status: r.status });
     }
     if (r.error && r.error.name === 'AbortError') throw r.error;
     if (r.status === 401 || r.status === 403) {
       if (token && !usedAuth) { usedAuth = true; continue; }
-      throw new Error(`HTTP ${r.status}`);
+      fail(token ? `HTTP ${r.status}` : '需要登录 Token（该资源受保护）', { status: r.status });
     }
     if ((r.error || isRetryableStatus(r.status)) && attempt < maxRetries) {
       await sleep(retryDelayFn(attempt));
       continue;
     }
-    throw r.error || new Error(`HTTP ${r.status}`);
+    fail(r.error ? r.error.message : `HTTP ${r.status}`, { status: r.status });
   }
-  throw new Error('下载失败');
+  fail('下载失败');
 }
 
 // ─── Parallel queue ─────────────────────────────────────────────────────────
