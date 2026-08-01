@@ -86,6 +86,23 @@ button:disabled { opacity:.5; cursor:not-allowed; }
     <div id="status" class="status"></div>
   </div>
 
+  <div class="card">
+    <label for="catalogUrlInput">教材目录（整册教材批量下载）</label>
+    <div class="input-row">
+      <input type="text" id="catalogUrlInput" placeholder="粘贴 tchMaterial 目录链接，自动展开全部子分类教材" />
+      <button id="btnLoadCatalog" class="btn-primary" style="min-width:80px">加载目录</button>
+    </div>
+    <div id="catalogStatus" class="status"></div>
+    <div id="catalogTreeWrap" style="display:none">
+      <div id="catalogTree" class="tree" style="max-height:320px;overflow-y:auto;border:1px solid #eee;border-radius:8px;padding:6px;margin-top:10px"></div>
+      <div style="display:flex;align-items:center;margin-top:10px;gap:8px">
+        <span id="catalogCount" style="font-size:12px;color:#666"></span>
+        <span style="flex:1"></span>
+        <button id="btnCatalogAdd" class="btn-success btn-sm">将选中教材加入下载列表</button>
+      </div>
+    </div>
+  </div>
+
   <div id="resultCard" class="card" style="display:none">
     <div class="resource-title" id="resTitle"></div>
     <div id="treeContainer" class="tree"></div>

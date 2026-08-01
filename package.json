@@ -5,7 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node tdd-logic.js && node tdd-downloader.js",
+    "test": "node tdd-logic.js && node tdd-downloader.js && node tdd-catalog.js",
     "check:asar": "node scripts/check-asar.js",
     "build:win-x64": "electron-builder --win --x64 && node scripts/check-asar.js",
     "build:win-arm64": "electron-builder --win --arm64 && node scripts/check-asar.js",
@@ -26,6 +26,7 @@
       "lib.js",
       "net.js",
       "downloader.js",
+      "catalog.js",
       "preload.js",
       "renderer.js",
       "index.html",

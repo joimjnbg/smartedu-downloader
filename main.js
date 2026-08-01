@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const lib = require('./lib');
 const net = require('./net');
+const catalog = require('./catalog');
 const { DownloadQueue } = require('./downloader');
 
 let mainWindow;
@@ -104,6 +105,11 @@ async function handleBasicWork(url) {
 async function handleTextbook(url) {
   const contentId = getUrlParam(url, 'contentId');
   if (!contentId) throw new Error('未找到 contentId');
+  const { title, node } = await resolveTextbook(contentId);
+  return { title, tree: [node] };
+}
+
+async function resolveTextbook(contentId) {
   const data = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrv2/resources/tch_material/details/${contentId}.json`);
   const title = data.title || '未命名';
   const cp = data.custom_properties || {};
@@ -111,7 +117,7 @@ async function handleTextbook(url) {
   const size = cp.size || 0;
   const info = extractUrl(data.ti_items, format, size);
   if (!info) throw new Error('未找到可下载的资源');
-  return { title, tree: [makeFileNode(sanitize(title), format, info.format, info.url, size)] };
+  return { title, node: makeFileNode(sanitize(title), format, info.format, info.url, size) };
 }
 
 async function handleClassActivity(url) {
@@ -413,4 +419,106 @@ ipcMain.handle('cancel-download', () => {
     return true;
   }
   return false;
+});
+
+// ─── IPC: Textbook Catalog ──────────────────────────────────────────────────
+// 目录数据源（教材全量列表）：
+//   data_version.json 返回若干分片 URL，每个分片约 1000 本教材的元数据。
+//   首次加载后缓存到 userData/catalog-cache.json，之后秒开。
+
+const catalogCacheFile = () => path.join(app.getPath('userData'), 'catalog-cache.json');
+
+let catalogStore = null;
+
+async function loadCatalogStore() {
+  if (catalogStore) return catalogStore;
+  let urls = null;
+  try {
+    const v = await fetchJson(catalog.CATALOG_VERSION_URL);
+    urls = String((v && v.urls) || '').split(',').map((s) => s.trim()).filter(Boolean);
+  } catch {}
+  if (fs.existsSync(catalogCacheFile())) {
+    try {
+      const cached = JSON.parse(fs.readFileSync(catalogCacheFile(), 'utf8'));
+      if (cached && Array.isArray(cached.books) && (!urls || (cached.urls || []).join() === urls.join())) {
+        catalogStore = cached;
+        return cached;
+      }
+    } catch {}
+  }
+  if (!urls || !urls.length) throw new Error('无法获取教材目录版本信息');
+  const books = await catalog.fetchAllBooks(fetchJson, urls);
+  catalogStore = { urls, books };
+  try {
+    fs.mkdirSync(path.dirname(catalogCacheFile()), { recursive: true });
+    fs.writeFileSync(catalogCacheFile(), JSON.stringify(catalogStore));
+  } catch {}
+  return catalogStore;
+}
+
+ipcMain.handle('catalog:load', async () => {
+  try {
+    const store = await loadCatalogStore();
+    return { success: true, total: store.books.length, cached: fs.existsSync(catalogCacheFile()) };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('catalog:tree', (event, defaultTag) => {
+  try {
+    if (!catalogStore) throw new Error('请先加载目录');
+    const parsed = catalog.parseCatalogUrl(defaultTag);
+    const books = catalog.filterByTagIds(catalogStore.books, parsed ? parsed.tagIds : []);
+    const tree = catalog.buildTree(books);
+    return { success: true, tree, tagPath: parsed ? parsed.tagIds : [] };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('catalog:books', async (event, list) => {
+  try {
+    const items = Array.isArray(list) ? list : [];
+    if (!items.length) throw new Error('未选择教材');
+    const total = items.length;
+    const results = [];
+    let done = 0;
+    const workers = Array.from({ length: Math.min(8, total) }, async () => {
+      while (items.length) {
+        const item = items.shift();
+        try {
+          const { title, node } = await resolveTextbook(item.id);
+          results.push({ ok: true, id: item.id, path: item.path, title, node });
+        } catch (e) {
+          results.push({ ok: false, id: item.id, path: item.path, error: e.message });
+        }
+        done++;
+        if (mainWindow) mainWindow.webContents.send('catalog-progress', { done, total });
+      }
+    });
+    await Promise.all(workers);
+
+    const root = { type: 'folder', name: '教材', children: [] };
+    for (const r of results) {
+      if (!r.ok) continue;
+      const parts = String(r.path || '').split('/').filter(Boolean);
+      let cur = root;
+      for (const p of parts) {
+        let f = cur.children.find((c) => c.type === 'folder' && c.name === p);
+        if (!f) { f = { type: 'folder', name: p, children: [] }; cur.children.push(f); }
+        cur = f;
+      }
+      cur.children.push({ type: 'file', ...r.node });
+    }
+    const okCount = results.filter((r) => r.ok).length;
+    return {
+      success: true,
+      title: `教材目录（成功 ${okCount}/${total}）`,
+      tree: root.children,
+      failed: results.filter((r) => !r.ok).map((r) => ({ id: r.id, path: r.path, error: r.error })),
+    };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 });

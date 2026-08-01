@@ -10,4 +10,10 @@ contextBridge.exposeInMainWorld('api', {
   },
   getToken: () => ipcRenderer.invoke('get-token'),
   setToken: (token) => ipcRenderer.invoke('set-token', token),
+  loadCatalog: () => ipcRenderer.invoke('catalog:load'),
+  getCatalogTree: (defaultTag) => ipcRenderer.invoke('catalog:tree', defaultTag),
+  resolveCatalogBooks: (books) => ipcRenderer.invoke('catalog:books', books),
+  onCatalogProgress: (cb) => {
+    ipcRenderer.on('catalog-progress', (_e, data) => cb(data));
+  },
 });

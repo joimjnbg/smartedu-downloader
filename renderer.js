@@ -21,11 +21,19 @@ const tokenInput = document.getElementById('tokenInput');
 const btnTokenSave = document.getElementById('btnTokenSave');
 const btnTokenCancel = document.getElementById('btnTokenCancel');
 const concurrencySel = document.getElementById('concurrencySel');
+const catalogUrlInput = document.getElementById('catalogUrlInput');
+const btnLoadCatalog = document.getElementById('btnLoadCatalog');
+const catalogStatusEl = document.getElementById('catalogStatus');
+const catalogTreeWrap = document.getElementById('catalogTreeWrap');
+const catalogTreeEl = document.getElementById('catalogTree');
+const catalogCountEl = document.getElementById('catalogCount');
+const btnCatalogAdd = document.getElementById('btnCatalogAdd');
 
 let flatFiles = [];
 let flatById = new Map();
 let fileRows = new Map();
 let accessToken = '';
+let catalogSelected = new Map();
 
 // ─── Token Management ──────────────────────────────────────────────────────
 
@@ -407,6 +415,221 @@ window.api.onProgress((data) => {
 // ─── Download History helpers ──────────────────────────────────────────────
 
 function sanitize(s) { return s.replace(/[/\\:*?"<>|]/g, '_').trim() || '文件'; }
+
+// ─── Catalog (教材目录) ────────────────────────────────────────────────────
+
+function setCatalogStatus(msg, type) {
+  catalogStatusEl.textContent = msg;
+  catalogStatusEl.className = 'status ' + type;
+}
+
+function updateCatalogCount() {
+  catalogCountEl.textContent = `已选 ${catalogSelected.size} 本教材`;
+}
+
+function catalogPathOf(parents, name) {
+  return [...parents, name].join('/');
+}
+
+function renderCatalogNode(node, container, parents, force) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'tree-node';
+  const row = document.createElement('div');
+  row.className = 'tree-row';
+  row.style.paddingLeft = (parents.length * 18) + 'px';
+
+  if (node.children && node.children.length) {
+    const toggle = document.createElement('span');
+    toggle.className = 'tree-toggle';
+    toggle.textContent = '▶';
+    row.appendChild(toggle);
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'tree-check';
+    row.appendChild(cb);
+
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.textContent = '📁';
+    row.appendChild(icon);
+
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    name.textContent = `${node.name}（${node.count}）`;
+    row.appendChild(name);
+
+    wrapper.appendChild(row);
+    const childrenDiv = document.createElement('div');
+    childrenDiv.className = 'tree-children';
+    childrenDiv.style.display = 'none';
+    wrapper.appendChild(childrenDiv);
+
+    const updateFolderCheckbox = () => {
+      let total = 0, sel = 0;
+      const walk = (n) => {
+        if (n.books && n.books.length) {
+          total += n.books.length;
+          sel += n.books.filter((b) => catalogSelected.has(b.id)).length;
+        }
+        for (const c of n.children) walk(c);
+      };
+      walk(node);
+      if (sel === 0) { cb.checked = false; cb.indeterminate = false; }
+      else if (sel === total) { cb.checked = true; cb.indeterminate = false; }
+      else { cb.checked = false; cb.indeterminate = true; }
+    };
+
+    const setFolderChecked = (checked) => {
+      const walk = (n, cur) => {
+        if (n.books && n.books.length) {
+          for (const b of n.books) {
+            if (checked) catalogSelected.set(b.id, { id: b.id, title: b.title, path: catalogPathOf(cur, b.title) });
+            else catalogSelected.delete(b.id);
+            if (b._cb) b._cb.checked = checked;
+          }
+        }
+        for (const c of n.children) walk(c, [...cur, n.name]);
+      };
+      walk(node, []);
+      updateFolderCheckbox();
+      updateCatalogCount();
+    };
+
+    cb.addEventListener('change', () => setFolderChecked(cb.checked));
+    childrenDiv.addEventListener('change', updateFolderCheckbox);
+
+    let rendered = force;
+    if (force) {
+      for (const child of node.children) renderCatalogNode(child, childrenDiv, [...parents, node.name], true);
+      childrenDiv.style.display = '';
+    }
+
+    row.addEventListener('click', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      const open = childrenDiv.style.display !== 'none';
+      if (!open) {
+        if (!rendered) {
+          for (const child of node.children) renderCatalogNode(child, childrenDiv, [...parents, node.name], false);
+          rendered = true;
+        }
+        childrenDiv.style.display = '';
+      } else {
+        childrenDiv.style.display = 'none';
+      }
+      toggle.classList.toggle('expanded', !open);
+    });
+  } else {
+    const toggle = document.createElement('span');
+    toggle.className = 'tree-toggle hidden';
+    toggle.textContent = '▶';
+    row.appendChild(toggle);
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'tree-check';
+    row.appendChild(cb);
+
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    name.textContent = node.title;
+    row.appendChild(name);
+
+    if (node.publisher) {
+      const pub = document.createElement('span');
+      pub.className = 'tree-fmt';
+      pub.textContent = node.publisher;
+      row.appendChild(pub);
+    }
+
+    wrapper.appendChild(row);
+
+    node._cb = cb;
+    cb.addEventListener('change', () => {
+      const path = catalogPathOf(parents, node.title);
+      if (cb.checked) catalogSelected.set(node.id, { id: node.id, title: node.title, path });
+      else catalogSelected.delete(node.id);
+      updateCatalogCount();
+      wrapper.closest('.tree-children')?.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  container.appendChild(wrapper);
+}
+
+function renderCatalogTree(tree) {
+  catalogTreeEl.innerHTML = '';
+  catalogSelected.clear();
+  updateCatalogCount();
+  if (!tree || !tree.children || !tree.children.length) {
+    catalogTreeEl.innerHTML = '<div class="dl-empty">该目录下没有找到教材</div>';
+    return;
+  }
+  for (const node of tree.children) renderCatalogNode(node, catalogTreeEl, [], false);
+}
+
+btnLoadCatalog.addEventListener('click', async () => {
+  const url = catalogUrlInput.value.trim();
+  if (!url) return setCatalogStatus('请输入教材目录链接', 'error');
+  setCatalogStatus('正在加载教材目录（首次约需 10~40 秒，之后走本地缓存）...', 'info');
+  btnLoadCatalog.disabled = true;
+  catalogTreeWrap.style.display = 'none';
+  try {
+    const res = await window.api.loadCatalog();
+    if (!res.success) return setCatalogStatus('目录加载失败: ' + res.error, 'error');
+    const treeRes = await window.api.getCatalogTree(url);
+    if (!treeRes.success) return setCatalogStatus('目录解析失败: ' + treeRes.error, 'error');
+    renderCatalogTree(treeRes.tree);
+    catalogTreeWrap.style.display = 'block';
+    const scope = treeRes.tagPath && treeRes.tagPath.length
+      ? `，当前分类范围 ${treeRes.tagPath.length} 层`
+      : '，显示全部教材';
+    setCatalogStatus(`目录加载成功：共 ${res.total} 本教材${scope}`, 'success');
+  } catch (e) {
+    setCatalogStatus('请求失败: ' + e.message, 'error');
+  } finally {
+    btnLoadCatalog.disabled = false;
+  }
+});
+
+btnCatalogAdd.addEventListener('click', async () => {
+  const selected = [...catalogSelected.values()];
+  if (!selected.length) return setCatalogStatus('请先勾选要下载的教材', 'error');
+  btnCatalogAdd.disabled = true;
+  btnCatalogAdd.textContent = '解析中...';
+  setCatalogStatus(`正在解析 ${selected.length} 本教材（每本需联网获取下载地址）...`, 'info');
+  try {
+    const res = await window.api.resolveCatalogBooks(selected);
+    if (!res.success) return setCatalogStatus('解析失败: ' + res.error, 'error');
+
+    nodeIdCounter = 0;
+    flatFiles = buildFileList(res.tree || [], '', null);
+    flatById = new Map(flatFiles.map(f => [f.id, f]));
+    resTitle.textContent = '📚 ' + res.title;
+    treeContainer.innerHTML = '';
+    renderTree(res.tree || [], treeContainer, 0);
+    updateSelectCount();
+    resultCard.style.display = 'block';
+    progressWrap.style.display = 'none';
+
+    setCatalogStatus(`已解析 ${flatFiles.length} 个文件${res.failed && res.failed.length ? `，${res.failed.length} 本失败` : ''}，请在下方结果区选择并下载`, 'success');
+    if (res.failed && res.failed.length) {
+      setStatus(`解析失败 ${res.failed.length} 本：${res.failed.map(f => f.path).join('、')}`, 'error');
+    }
+    resultCard.scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    setCatalogStatus('解析出错: ' + e.message, 'error');
+  } finally {
+    btnCatalogAdd.disabled = false;
+    btnCatalogAdd.textContent = '将选中教材加入下载列表';
+  }
+});
+
+window.api.onCatalogProgress((d) => {
+  if (btnCatalogAdd.disabled) {
+    setCatalogStatus(`正在解析教材 ${Math.min(d.done + 1, d.total)}/${d.total}...`, 'info');
+  }
+});
 
 // ─── Init ──────────────────────────────────────────────────────────────────
 
