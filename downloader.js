@@ -18,6 +18,18 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_MAX_RETRIES = 3;
 const PROGRESS_THROTTLE_MS = 100;
 
+// Private CDN (r1-ndr-private...) authenticates via X-ND-AUTH only.
+// Sending `Authorization: Bearer` there is randomly rejected by the upstream
+// OSS (HTTP 400 InvalidArgument) because OSS tries to parse it as its own
+// signature. Public hosts keep both headers for the platform JSON APIs.
+function authHeadersFor(url, token) {
+  if (!token) return {};
+  if (/ndr-private\./.test(url)) {
+    return { 'X-ND-AUTH': `MAC id="${token}",nonce="0",mac="0"` };
+  }
+  return authHeaders(token);
+}
+
 class AbortError extends Error {
   constructor() { super('ABORTED'); this.name = 'AbortError'; }
 }
@@ -135,7 +147,7 @@ async function downloadOne(url, dest, opts = {}) {
     const offset = st ? st.size : 0;
 
     const headers = { 'User-Agent': 'Mozilla/5.0', Accept: '*/*' };
-    if (usedAuth) Object.assign(headers, authHeaders(token));
+    if (usedAuth) Object.assign(headers, authHeadersFor(url, token));
     if (offset > 0) headers['Range'] = `bytes=${offset}-`;
 
     const r = await streamOnce(url, dest, { headers, signal, timeoutMs, offset, onProgress });
@@ -282,4 +294,4 @@ class DownloadQueue {
   }
 }
 
-module.exports = { downloadOne, streamOnce, DownloadQueue, AbortError, retryDelay, isRetryableStatus };
+module.exports = { downloadOne, streamOnce, DownloadQueue, AbortError, retryDelay, isRetryableStatus, authHeadersFor };

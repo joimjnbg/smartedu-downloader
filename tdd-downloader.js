@@ -12,7 +12,7 @@ const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { downloadOne, DownloadQueue, AbortError } = require('./downloader');
+const { downloadOne, DownloadQueue, AbortError, authHeadersFor } = require('./downloader');
 
 // â”€â”€â”€ Test Runner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -234,6 +234,20 @@ async function run() {
     assert('error carries stage', !!err && err.stage === 'download');
     assert('error carries status 401', !!err && err.status === 401);
     assert('error carries url', !!err && err.url === `${baseUrl}/auth`);
+  }
+
+  group('3c. Private CDN auth uses X-ND-AUTH only (no Authorization)');
+  {
+    const h = authHeadersFor('https://r1-ndr-private.ykt.cbern.com.cn/edu_product/x.pdf', 'TOK');
+    assert('private CDN sends X-ND-AUTH', h['X-ND-AUTH'] === 'MAC id="TOK",nonce="0",mac="0"');
+    assert('private CDN omits Authorization', !h.Authorization);
+  }
+
+  group('3d. Other hosts keep Authorization + X-ND-AUTH');
+  {
+    const h = authHeadersFor('https://r1-ndr.ykt.cbern.com.cn/edu_product/x.pdf', 'TOK');
+    assert('public host sends Authorization', h.Authorization === 'Bearer TOK');
+    assert('public host keeps X-ND-AUTH', !!h['X-ND-AUTH']);
   }
 
   group('4. Range resume after interrupted download');
