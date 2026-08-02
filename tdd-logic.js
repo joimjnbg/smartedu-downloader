@@ -191,6 +191,19 @@ assert('image: extracts jpg URL', !!imgResult && imgResult.format === 'jpg');
 const noMatch = lib.extractUrl([{ ti_format: 'txt', ti_file_flag: 'unknown', ti_size: 100 }], 'xyz');
 assert('no match returns null', noMatch === null);
 
+// Transcode page-image items (private OSS bucket, HTTP 400 on Bearer auth) must be skipped
+const transcodeItems = [
+  { ti_format: 'folder', ti_file_flag: 'image', ti_size: 112015442, ti_storage: 'cs_path:${ref-path}/edu_product/esp/assets/assets_document.t/zh-CN/1725005880566/transcode/image' },
+  { ti_format: 'jpg', ti_file_flag: 'thumbnail_1', ti_size: 1645838, ti_storage: 'cs_path:${ref-path}/edu_product/esp/assets/assets_document.t/zh-CN/1725005880566/transcode/image/1.jpg' },
+  { ti_format: 'pdf', ti_file_flag: 'source', ti_size: 33078166, ti_is_source_file: true, ti_storage: 'cs_path:${ref-path}/edu_product/esp/assets/book.pkg/book.pdf' },
+];
+const trResult = lib.extractUrl(transcodeItems, 'pdf', 33078166);
+assert('transcode: page-images skipped, PDF still extracted', !!trResult && trResult.format === 'pdf' && trResult.url.includes('book.pdf'));
+const onlyTranscode = lib.extractUrl(transcodeItems.slice(0, 2), 'jpg', 1645838);
+assert('transcode: only page-images present returns null', onlyTranscode === null);
+const isSkip = lib.isSkippableItem(transcodeItems[0]) && lib.isSkippableItem(transcodeItems[1]) && !lib.isSkippableItem(transcodeItems[2]);
+assert('isSkippableItem flags transcode items only', isSkip === true);
+
 // ───────────────────────────────────────────────────────────────────────────
 //  3. extractAllUrls
 // ───────────────────────────────────────────────────────────────────────────

@@ -27,6 +27,20 @@ function getStorageUrl(item) {
   return null;
 }
 
+// Transcode page-images (folder/thumbnail items under .../transcode/image/)
+// live on a private OSS bucket that rejects our Bearer auth with HTTP 400
+// (InvalidArgument) and cannot be downloaded at all. They are e-book page
+// scans, never the document itself — skip them everywhere.
+function isSkippableItem(item) {
+  const storage = String(item.ti_storage || '');
+  if (/\/transcode\/(image|video)\//.test(storage)) return true;
+  const fmt = String(item.ti_format || '').toLowerCase();
+  if (fmt === 'folder' || fmt === 'image') return true;
+  const flag = String(item.ti_file_flag || '').toLowerCase();
+  if (flag.includes('thumb')) return true;
+  return false;
+}
+
 // ─── URL type detection ───────────────────────────────────────────────────
 
 function detectType(url) {
@@ -97,7 +111,7 @@ function extractUrl(tiItems, preferredFormat, size) {
   // Priority 3: match by size for non-mp4
   if (preferredFormat !== 'mp4' && preferredFormat !== 'm3u8') {
     for (const item of tiItems) {
-      if (item.ti_size == size && item.ti_storage) {
+      if (item.ti_size == size && item.ti_storage && !isSkippableItem(item)) {
         return { url: fixCsPath(item.ti_storage), format: item.ti_format || preferredFormat };
       }
     }
@@ -115,6 +129,7 @@ function extractUrl(tiItems, preferredFormat, size) {
 
   // Priority 5: any non-thumbnail ti_items (broad match)
   for (const item of tiItems) {
+    if (isSkippableItem(item)) continue;
     if (item.ti_file_flag === 'href' || !item.ti_file_flag) {
       const url = getStorageUrl(item);
       if (url) {
@@ -239,6 +254,7 @@ module.exports = {
   sanitize,
   fixCsPath,
   getStorageUrl,
+  isSkippableItem,
   detectType,
   extractUrl,
   extractAllUrls,

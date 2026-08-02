@@ -28,21 +28,29 @@ function retryDelay(attempt) {
 }
 
 function isRetryableStatus(status) {
-  return status === 429 || status >= 500;
+  return status === 400 || status === 429 || status >= 500;
 }
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function ossHint(body) {
+  if (!body) return '';
+  const code = /<Code>([^<]+)<\/Code>/.exec(body);
+  const msg = /<Message>([^<]+)<\/Message>/.exec(body);
+  return (code ? ` [OSS ${code[1]}]` : '') + (msg ? ` ${msg[1]}` : '');
+}
+
 // Single HTTP request that streams one response into dest.
-// resolve({ status, ok, restart, received, total, error })
+// resolve({ status, ok, restart, received, total, error, body })
 async function streamOnce(url, dest, { headers, signal, timeoutMs, offset, onProgress }) {
   return new Promise((resolve) => {
     let req;
     let settled = false;
     const client = url.startsWith('https') ? https : http;
     let bytes = 0;
+    let headBody = '';
 
     const cleanup = () => {
       if (signal) signal.removeEventListener('abort', onAbort);
@@ -62,7 +70,14 @@ async function streamOnce(url, dest, { headers, signal, timeoutMs, offset, onPro
         const status = res.statusCode || 0;
 
         if (status === 416) { res.resume(); return finish({ status, ok: false }); }
-        if (status !== 200 && status !== 206) { res.resume(); return finish({ status, ok: false }); }
+        if (status !== 200 && status !== 206) {
+          res.on('data', (c) => {
+            if (headBody.length < 1024) headBody += c.toString('utf8').slice(0, 1024 - headBody.length);
+          });
+          res.on('end', () => finish({ status, ok: false, body: headBody }));
+          res.resume();
+          return;
+        }
 
         const append = status === 206;
         if (!append && offset > 0) { res.resume(); return finish({ status, ok: false, restart: true }); }
@@ -125,7 +140,7 @@ async function downloadOne(url, dest, opts = {}) {
 
     const r = await streamOnce(url, dest, { headers, signal, timeoutMs, offset, onProgress });
     if (r.total != null) finalTotal = offset + r.total;
-    attemptLog.push({ attempt, status: r.status || 0, error: r.error ? r.error.message : null, offset, at: new Date().toISOString() });
+    attemptLog.push({ attempt, status: r.status || 0, error: r.error ? r.error.message : (ossHint(r.body) || null), offset, at: new Date().toISOString() });
 
     if (r.ok) {
       const nowSize = (st ? st.size : 0) + r.received;
@@ -147,13 +162,13 @@ async function downloadOne(url, dest, opts = {}) {
     if (r.error && r.error.name === 'AbortError') throw r.error;
     if (r.status === 401 || r.status === 403) {
       if (token && !usedAuth) { usedAuth = true; continue; }
-      fail(token ? `HTTP ${r.status}` : '需要登录 Token（该资源受保护）', { status: r.status });
+      fail(token ? `HTTP ${r.status}${ossHint(r.body)}` : '需要登录 Token（该资源受保护）', { status: r.status });
     }
     if ((r.error || isRetryableStatus(r.status)) && attempt < maxRetries) {
       await sleep(retryDelayFn(attempt));
       continue;
     }
-    fail(r.error ? r.error.message : `HTTP ${r.status}`, { status: r.status });
+    fail(r.error ? r.error.message : `HTTP ${r.status}${ossHint(r.body)}`, { status: r.status });
   }
   fail('下载失败');
 }

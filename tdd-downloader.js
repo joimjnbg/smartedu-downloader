@@ -54,6 +54,7 @@ let flakyHits = 0;
 let authSeen = [];
 let rangeSeen = [];
 let truncHits = 0;
+let bad400Hits = 0;
 let qActive = 0;
 let maxQActive = 0;
 let slowHits = 0;
@@ -144,6 +145,24 @@ const server = http.createServer((req, res) => {
     // Declares more bytes than it sends: client must detect incompleteness
     res.writeHead(200, { 'Content-Length': BODY_2.length * 2 });
     res.end(BODY_2);
+    return;
+  }
+
+  if (url === '/bad400') {
+    bad400Hits++;
+    if (bad400Hits === 1) {
+      res.writeHead(400, { 'Content-Type': 'application/xml' });
+      res.end('<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidArgument</Code><Message>Authorization header is invalid</Message></Error>');
+      return;
+    }
+    res.writeHead(200, { 'Content-Length': BODY_2.length });
+    res.end(BODY_2);
+    return;
+  }
+
+  if (url === '/bad400persist') {
+    res.writeHead(400, { 'Content-Type': 'application/xml' });
+    res.end('<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Access denied</Message></Error>');
     return;
   }
 
@@ -296,6 +315,24 @@ async function run() {
     await fsp.writeFile(p, BODY_1);
     const r = await downloadOne(`${baseUrl}/range`, p, { retryDelayFn: RETRY0 });
     assert('existing complete file short-circuits', r.alreadyComplete === true && r.bytes === BODY_1.length);
+  }
+
+  group('11. Retry on HTTP 400 (OSS/CDN transient)');
+  {
+    const p = dest('bad400.bin');
+    const r = await downloadOne(`${baseUrl}/bad400`, p, { retryDelayFn: RETRY0, maxRetries: 2 });
+    const data = await fsp.readFile(p);
+    assert('400 is retried, file downloads', r.bytes === BODY_2.length && data.equals(BODY_2));
+    assert('attempt log records OSS error code', (r.attemptLog[0] && r.attemptLog[0].error || '').includes('InvalidArgument'));
+  }
+
+  group('11b. Persistent 400 fails with OSS code in message');
+  {
+    await expectReject(
+      'error message includes OSS Code',
+      () => downloadOne(`${baseUrl}/bad400persist`, dest('bad400p.bin'), { retryDelayFn: RETRY0, maxRetries: 1 }),
+      /OSS AccessDenied/
+    );
   }
 
   await new Promise((resolve) => server.close(resolve));
