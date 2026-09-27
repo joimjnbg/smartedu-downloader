@@ -2,19 +2,43 @@ const CATALOG_VERSION_URL = 'https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/resource
 
 const DIMENSION_ORDER = ['zxxxd', 'zxxxk', 'zxxbb', 'zxxnj', 'zxxcc'];
 
+const SYNC_CLASSROOM_VERSION_URL = 'https://s-file-2.ykt.cbern.com.cn/zxx/ndrs/national_lesson/teachingmaterials/version/data_version.json';
+
+// The syncClassroom catalog adds a 6th tag dimension (new/old textbook, e.g.
+// 5136342961 = 新教材) that tchMaterial books don't carry. Catalog.matchTags
+// keeps only tag ids the loaded books actually have, so a 6-tag link still
+// resolves to the right scope instead of matching nothing.
+const UNKNOWN_TAG_DIMENSION = 'zxxxjjc';
+
 function parseCatalogUrl(url) {
   if (typeof url !== 'string' || !url) return null;
   try {
     const u = new URL(url);
-    if (!u.hostname.endsWith('smartedu.cn') || !/tchMaterial|textbook/i.test(u.pathname)) return null;
+    if (!u.hostname.endsWith('smartedu.cn')) return null;
     const tag = u.searchParams.get('defaultTag');
     if (!tag) return null;
     const tagIds = tag.split('/').map((s) => s.trim()).filter(Boolean);
     if (!tagIds.length) return null;
-    return { tagIds };
+    if (/tchMaterial|textbook/i.test(u.pathname)) return { kind: 'textbook', tagIds };
+    if (/syncClassroom/i.test(u.pathname)) return { kind: 'syncClassroom', tagIds };
+    return null;
   } catch {
     return null;
   }
+}
+
+// Drop tag ids no loaded book carries (e.g. the syncClassroom-only 新旧教材
+// tag when filtering tchMaterial books, or vice versa).
+function matchTags(books, tagIds) {
+  const ids = (tagIds || []).filter(Boolean);
+  if (!ids.length) return [];
+  const known = new Set();
+  for (const b of books || []) {
+    for (const t of b.tag_list || []) {
+      if (t && t.tag_id) known.add(t.tag_id);
+    }
+  }
+  return ids.filter((id) => known.has(id));
 }
 
 async function fetchAllBooks(fetchFn, urls, onProgress) {
@@ -148,8 +172,11 @@ function collectBooks(node) {
 
 module.exports = {
   CATALOG_VERSION_URL,
+  SYNC_CLASSROOM_VERSION_URL,
+  UNKNOWN_TAG_DIMENSION,
   DIMENSION_ORDER,
   parseCatalogUrl,
+  matchTags,
   fetchAllBooks,
   filterByTagIds,
   buildTree,

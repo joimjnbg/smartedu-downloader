@@ -117,7 +117,138 @@ async function resolveTextbook(contentId) {
   const size = cp.size || 0;
   const info = extractUrl(data.ti_items, format, size);
   if (!info) throw new Error('未找到可下载的资源');
-  return { title, node: makeFileNode(sanitize(title), format, info.format, info.url, size) };
+  const node = makeFileNode(sanitize(title), format, info.format, info.url, size);
+  // English (and similar) textbooks ship listening audios as a sidecar list
+  // (ndrs/resources/<id>/relation_audios.json). Missing sidecar ([]) means
+  // no audios — attach it as its own folder so it can't be missed.
+  // NOTE: like the PDF itself, audios on the private CDN need a login Token
+  // (HTTP 401 without one) — the app already guides Token setup + retry.
+  try {
+    const audios = await fetchJson(
+      `https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/resources/${contentId}/relation_audios.json`);
+    const tracks = lib.parseAudioTracks(audios);
+    if (tracks.length) {
+      return {
+        title,
+        node: { name: sanitize(title), type: 'folder', children: [node, { name: '音频', type: 'folder', children: tracks }] },
+      };
+    }
+  } catch {}
+  return { title, node };
+}
+
+// Fetch one national_lesson activity's downloadable resources
+// (syncClassroom catalog leaf). relations.national_course_resource items have
+// no ti_items inline — each resolves via ndrv2/national_lesson/resources/details.
+async function resolveActivity(activityId) {
+  const data = await fetchJson(`https://s-file-2.ykt.cbern.com.cn/zxx/ndrv2/national_lesson/resources/details/${activityId}.json`);
+  const title = data.title || '未命名';
+  const tree = parseRelationResources(data.relations, null, {
+    national_course_resource: '课程资源',
+    lesson_plan_design: '教学设计',
+    classroom_record: '课堂实录',
+    teaching_assets: '教学资源',
+  });
+  if (!tree.length) throw new Error('未找到可下载的资源');
+  return { title: sanitize(title), tree };
+}
+
+// Resolve a syncClassroom catalog link (defaultTag) to a resource tree:
+// defaultTag -> teachingmaterial container(s) (national_lesson catalog shard)
+// -> chapter tree + resource parts -> per-activity details.
+async function handleSyncClassroomCatalog(pageUrl) {
+  const parsed = catalog.parseCatalogUrl(pageUrl);
+  if (!parsed) throw new Error('未找到 defaultTag');
+  const store = await loadCatalogStore(SYNC_CLASSROOM_KIND);
+  const tagIds = catalog.matchTags(store.books, parsed.tagIds);
+  if (!tagIds.length) throw new Error('该目录下没有找到课程（标签无匹配）');
+  const books = catalog.filterByTagIds(store.books, tagIds);
+  if (!books.length) throw new Error('该目录下没有找到课程');
+  // Cap the scope: a 5-tag link matches one container (a whole book).
+  const targets = books.slice(0, 3);
+  // Same tag scope reused for the tchMaterial audio sidecar (see below).
+  let tchTagIds = tagIds;
+  try {
+    const tchStore = await loadCatalogStore(TEXTBOOK_KIND);
+    const matched = catalog.matchTags(tchStore.books, parsed.tagIds);
+    if (matched.length) tchTagIds = matched;
+  } catch {}
+  const root = { type: 'folder', name: '课程教学', children: [] };
+  let okCount = 0;
+  for (const b of targets) {
+    try {
+      const items = await resolveTeachingmaterial(b.id, b.title || '', tchTagIds);
+      if (items.length) {
+        okCount++;
+        root.children.push({ name: sanitize(b.title || b.id), type: 'folder', children: items });
+      }
+      if (mainWindow) mainWindow.webContents.send('catalog-progress', { done: okCount, total: targets.length });
+    } catch {}
+  }
+  if (!okCount) throw new Error('课程目录解析失败（可能是网络问题，请重试）');
+  return { title: `课程教学目录（${okCount}/${targets.length}）`, tree: root.children };
+}
+
+async function resolveTeachingmaterial(containerId, containerTitle, tchTagIds) {
+  const partsUrl = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/national_lesson/teachingmaterials/${containerId}/resources/parts.json`);
+  const partLists = await Promise.all(
+    (Array.isArray(partsUrl) ? partsUrl : []).map((u) => fetchJson(u).catch(() => [])));
+  const entries = partLists.flat().filter((a) => a && a.id);
+
+  // 1. Listening audios: parts entries carry no ti_items, and neither the
+  //    sync audio ids nor the teachingmaterial container id serve the
+  //    relation_audios sidecar (both 403). But the tchMaterial book for the
+  //    same tag scope does — resolve the scope's book(s) and reuse theirs.
+  const hasListening = entries.some((e) => e.resource_type_code === 'listening');
+  if (hasListening) {
+    try {
+      const tchStore = await loadCatalogStore(TEXTBOOK_KIND);
+      const books = catalog.filterByTagIds(tchStore.books, tchTagIds || []);
+      const seenAudio = new Set();
+      const out = [];
+      for (const b of books.slice(0, 5)) {
+        try {
+          const list = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrs/resources/${b.id}/relation_audios.json`);
+          for (const t of lib.parseAudioTracks(list)) {
+            if (seenAudio.has(t.url)) continue;
+            seenAudio.add(t.url);
+            out.push({ ...t, type: 'file' });
+          }
+        } catch {}
+      }
+      if (out.length) return [{ name: '音频', type: 'folder', children: out }];
+    } catch {}
+  }
+
+  // 2. No audios (e.g. math): fall back to chapter tree + activity details.
+  const trees = await fetchJson(`https://s-file-1.ykt.cbern.com.cn/zxx/ndrv2/national_lesson/trees/${containerId}.json`);
+  const byId = new Map(entries.map((a) => [a.id, a]));
+  const folders = [];
+  const walk = async (nodes, parents) => {
+    for (const n of nodes || []) {
+      const path = [...parents, sanitize(n.title || '未命名')];
+      const act = byId.get(n.id);
+      if (act) {
+        try {
+          const { tree } = await resolveActivity(act.id);
+          const folder = { name: path.join('/'), type: 'folder', children: [] };
+          for (const f of tree) folder.children.push(f);
+          if (folder.children.length) folders.push(folder);
+        } catch {}
+      }
+      if (n.child_nodes && n.child_nodes.length) await walk(n.child_nodes, path);
+    }
+  };
+  await walk(Array.isArray(trees) ? trees : [], []);
+  if (!folders.length) {
+    for (const act of entries.slice(0, 50)) {
+      try {
+        const { tree } = await resolveActivity(act.id);
+        if (tree.length) folders.push({ name: sanitize(act.title || act.id), type: 'folder', children: tree });
+      } catch {}
+    }
+  }
+  return folders;
 }
 
 async function handleClassActivity(url) {
@@ -275,6 +406,11 @@ ipcMain.handle('fetch-resource', async (event, pageUrl) => {
     switch (type) {
       case 'basicWork':     result = await handleBasicWork(pageUrl); break;
       case 'textbook':      result = await handleTextbook(pageUrl); break;
+      case 'syncClassroomCatalog': result = await handleSyncClassroomCatalog(pageUrl); break;
+      case 'textbookCatalog': {
+        result = await handleTextbookCatalog(pageUrl);
+        break;
+      }
       case 'classActivity': result = await handleClassActivity(pageUrl); break;
       case 'courseware':    result = await handleCourseware(pageUrl); break;
       case 'oneTeacher':    result = await handleOneTeacher(pageUrl); break;
@@ -466,40 +602,68 @@ ipcMain.handle('cancel-download', () => {
 //   data_version.json 返回若干分片 URL，每个分片约 1000 本教材的元数据。
 //   首次加载后缓存到 userData/catalog-cache.json，之后秒开。
 
-const catalogCacheFile = () => path.join(app.getPath('userData'), 'catalog-cache.json');
+const catalogCacheFile = (kind) => path.join(app.getPath('userData'), `catalog-cache-${kind || 'textbook'}.json`);
 
-let catalogStore = null;
+const TEXTBOOK_KIND = 'textbook';
+const SYNC_CLASSROOM_KIND = 'syncClassroom';
+const catalogStores = {};
 
-async function loadCatalogStore() {
-  if (catalogStore) return catalogStore;
+async function loadCatalogStore(kind) {
+  const k = kind || TEXTBOOK_KIND;
+  if (catalogStores[k]) return catalogStores[k];
+  const versionUrl = k === SYNC_CLASSROOM_KIND ? catalog.SYNC_CLASSROOM_VERSION_URL : catalog.CATALOG_VERSION_URL;
   let urls = null;
   try {
-    const v = await fetchJson(catalog.CATALOG_VERSION_URL);
+    const v = await fetchJson(versionUrl);
     urls = String((v && v.urls) || '').split(',').map((s) => s.trim()).filter(Boolean);
   } catch {}
-  if (fs.existsSync(catalogCacheFile())) {
+  if (fs.existsSync(catalogCacheFile(k))) {
     try {
-      const cached = JSON.parse(fs.readFileSync(catalogCacheFile(), 'utf8'));
+      const cached = JSON.parse(fs.readFileSync(catalogCacheFile(k), 'utf8'));
       if (cached && Array.isArray(cached.books) && (!urls || (cached.urls || []).join() === urls.join())) {
-        catalogStore = cached;
+        catalogStores[k] = cached;
         return cached;
       }
     } catch {}
   }
-  if (!urls || !urls.length) throw new Error('无法获取教材目录版本信息');
+  if (!urls || !urls.length) throw new Error('无法获取目录版本信息');
   const books = await catalog.fetchAllBooks(fetchJson, urls);
-  catalogStore = { urls, books };
+  catalogStores[k] = { urls, books };
   try {
-    fs.mkdirSync(path.dirname(catalogCacheFile()), { recursive: true });
-    fs.writeFileSync(catalogCacheFile(), JSON.stringify(catalogStore));
+    fs.mkdirSync(path.dirname(catalogCacheFile(k)), { recursive: true });
+    fs.writeFileSync(catalogCacheFile(k), JSON.stringify(catalogStores[k]));
   } catch {}
-  return catalogStore;
+  return catalogStores[k];
+}
+
+// Keep the old single-store shape working for existing callers/tests.
+let catalogStore = null;
+
+// Paste-a-catalog-link into the main URL box: same scope resolution as the
+// catalog panel, but returns a ready-to-download tree directly.
+async function handleTextbookCatalog(pageUrl) {
+  const parsed = catalog.parseCatalogUrl(pageUrl);
+  if (!parsed) throw new Error('未找到 defaultTag');
+  if (!catalogStore) catalogStore = await loadCatalogStore(TEXTBOOK_KIND);
+  const tagIds = catalog.matchTags(catalogStore.books, parsed.tagIds);
+  const books = catalog.filterByTagIds(catalogStore.books, tagIds.length ? tagIds : parsed.tagIds);
+  if (!books.length) throw new Error('该目录下没有找到教材');
+  const root = { type: 'folder', name: '教材', children: [] };
+  for (const b of books.slice(0, 50)) {
+    try {
+      const { title, node } = await resolveTextbook(b.id);
+      root.children.push({ type: 'file', ...node, name: `${sanitize(b.title || title)}` });
+    } catch {}
+  }
+  if (!root.children.length) throw new Error('该目录下没有找到可下载的教材');
+  return { title: `教材目录（${root.children.length} 本）`, tree: root.children };
 }
 
 ipcMain.handle('catalog:load', async () => {
   try {
-    const store = await loadCatalogStore();
-    return { success: true, total: store.books.length, cached: fs.existsSync(catalogCacheFile()) };
+    const store = await loadCatalogStore(TEXTBOOK_KIND);
+    catalogStore = store;
+    return { success: true, total: store.books.length, cached: fs.existsSync(catalogCacheFile(TEXTBOOK_KIND)) };
   } catch (e) {
     return { success: false, error: e.message };
   }
@@ -509,7 +673,11 @@ ipcMain.handle('catalog:tree', (event, defaultTag) => {
   try {
     if (!catalogStore) throw new Error('请先加载目录');
     const parsed = catalog.parseCatalogUrl(defaultTag);
-    const books = catalog.filterByTagIds(catalogStore.books, parsed ? parsed.tagIds : []);
+    if (parsed && parsed.kind === SYNC_CLASSROOM_KIND) {
+      throw new Error('这是课程教学（syncClassroom）目录链接，请粘贴到上方「资源链接」输入框直接解析');
+    }
+    const tagIds = catalog.matchTags(catalogStore.books, parsed ? parsed.tagIds : []);
+    const books = catalog.filterByTagIds(catalogStore.books, tagIds.length ? tagIds : (parsed ? parsed.tagIds : []));
     const tree = catalog.buildTree(books);
     return { success: true, tree, tagPath: parsed ? parsed.tagIds : [] };
   } catch (e) {
@@ -556,6 +724,14 @@ ipcMain.handle('catalog:books', async (event, list) => {
     await Promise.all(workers);
 
     const root = { type: 'folder', name: '教材', children: [] };
+    const pushNode = (parent, node) => {
+      // resolveTextbook may return a folder (PDF + 音频) for audio books.
+      if (node && node.type === 'folder' && Array.isArray(node.children)) {
+        parent.children.push(node);
+      } else {
+        parent.children.push({ type: 'file', ...node });
+      }
+    };
     for (const r of results) {
       if (!r.ok) continue;
       const parts = String(r.path || '').split('/').filter(Boolean);
@@ -565,7 +741,7 @@ ipcMain.handle('catalog:books', async (event, list) => {
         if (!f) { f = { type: 'folder', name: p, children: [] }; cur.children.push(f); }
         cur = f;
       }
-      cur.children.push({ type: 'file', ...r.node });
+      pushNode(cur, r.node);
     }
     const okCount = results.filter((r) => r.ok).length;
     return {

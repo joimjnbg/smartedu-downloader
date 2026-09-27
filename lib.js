@@ -71,6 +71,13 @@ function detectType(url) {
   if (path.includes('/qualityCourse')) return 'qualityCourse';
   if (path.includes('/sedu/detail') || path.includes('/wisdom/detail')) return 'video';
 
+  // Directory (catalog) links carry defaultTag instead of a resource id.
+  // Detail links above take precedence (they never carry defaultTag).
+  if (params['defaultTag']) {
+    if (path === '/syncClassroom' || path.startsWith('/syncClassroom/')) return 'syncClassroomCatalog';
+    if (path === '/tchMaterial' || path.startsWith('/tchMaterial')) return 'textbookCatalog';
+  }
+
   // /syncClassroom/prepare/detail: determine by which param is present
   if (path.includes('/syncClassroom/prepare/detail')) {
     if (params['resourceId']) return 'courseware';
@@ -188,6 +195,58 @@ function extractAllUrls(tiItems) {
 
 // ─── Build resource tree from relations ───────────────────────────────────
 
+// ─── relation_audios items (tchMaterial audio tracks) ───────────────────────
+// Each entry has resource_type_code 'listening', custom_properties.format 'mp3',
+// and ti_items: mp3/href, mp3/href-clip, ogg/href-ogg, ogg/href-ogg-clip,
+// mp3/source (ti_is_source_file). Prefer the source file, else the href mp3.
+// Dedupes href vs href-clip (same recording, clipped variant) by default:
+// pass { includeClips: true } to keep both.
+function pickAudioUrl(tiItems, opts) {
+  const includeClips = !!(opts && opts.includeClips);
+  if (!tiItems) return null;
+  const byFlag = {};
+  for (const t of tiItems) {
+    if (t.ti_format !== 'mp3') continue;
+    if (!byFlag[t.ti_file_flag]) byFlag[t.ti_file_flag] = t;
+  }
+  const src = byFlag['source'];
+  if (src) {
+    const url = getStorageUrl(src);
+    if (url) return { url, format: 'mp3' };
+  }
+  const main = byFlag['href'];
+  if (main) {
+    const url = getStorageUrl(main);
+    if (url) return { url, format: 'mp3' };
+  }
+  if (includeClips && byFlag['href-clip']) {
+    const url = getStorageUrl(byFlag['href-clip']);
+    if (url) return { url, format: 'mp3' };
+  }
+  return null;
+}
+
+// Build one file node per audio track. Shared by main.js (tchMaterial detail
+// page appends these under an '音频' folder) and testable without Electron.
+function parseAudioTracks(audioItems, opts) {
+  const out = [];
+  if (!Array.isArray(audioItems)) return out;
+  const seen = new Set();
+  for (const item of audioItems) {
+    const info = pickAudioUrl(item.ti_items, opts);
+    if (!info) continue;
+    if (seen.has(info.url)) continue;
+    seen.add(info.url);
+    const cn = (item.global_title && item.global_title['zh-CN']) || '';
+    const st = item.title || '';
+    const base = cn ? (st && st !== cn ? `${cn} - ${st}` : cn) : (st || '未命名');
+    const cp = item.custom_properties || {};
+    const size = cp.size || 0;
+    out.push(makeFileNode(`${sanitize(base)}[音频]`, 'mp3', info.format, info.url, size));
+  }
+  return out;
+}
+
 function makeFileNode(name, format, actualFormat, url, size) {
   const useFmt = actualFormat || format;
   const ext = useFmt ? `.${useFmt}` : '';
@@ -258,6 +317,8 @@ module.exports = {
   detectType,
   extractUrl,
   extractAllUrls,
+  pickAudioUrl,
+  parseAudioTracks,
   makeFileNode,
   parseRelationResources,
   TYPE_LABELS,

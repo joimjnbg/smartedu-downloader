@@ -122,6 +122,12 @@ assert('video: /sedu/detail',
 assert('video: /wisdom/detail',
   lib.detectType('https://basic.smartedu.cn/wisdom/detail?contentId=xxx') === 'video');
 
+assert('syncClassroomCatalog: /syncClassroom with defaultTag',
+  lib.detectType('https://basic.smartedu.cn/syncClassroom?defaultTag=e7bbce2c-0590-11ed-9c79-92fc3b3249d5%2F44bec67a-54e6-11ed-9c34-850ba61fa9f4%2F6a7495dc-0772-11ed-ac74-092ab92074e6%2F44bee664-54e6-11ed-9c34-850ba61fa9f4%2Fff8080814371757b014390f883db0453%2F5136342961') === 'syncClassroomCatalog');
+
+assert('textbookCatalog: /tchMaterial with defaultTag',
+  lib.detectType('https://basic.smartedu.cn/tchMaterial?defaultTag=abc%2Fdef') === 'textbookCatalog');
+
 assert('unknown: unrelated URL',
   lib.detectType('https://example.com/somePage') === 'unknown');
 
@@ -374,6 +380,52 @@ assert('image formats mapped', lib.TYPE_LABELS.jpg === '图片' && lib.TYPE_LABE
 assert('audio formats mapped', lib.TYPE_LABELS.mp3 === '音频' && lib.TYPE_LABELS.wav === '音频');
 assert('archive formats mapped', lib.TYPE_LABELS.zip === '压缩包' && lib.TYPE_LABELS['7z'] === '压缩包');
 assert('unknown format returns uppercase', lib.TYPE_LABELS['xyz'] === undefined);
+
+// ───────────────────────────────────────────────────────────────────────────
+//  8. Audio tracks (relation_audios)
+// ───────────────────────────────────────────────────────────────────────────
+
+group('8. Audio Tracks (pickAudioUrl / parseAudioTracks)');
+
+function mockAudioItem(title, flags) {
+  return {
+    global_title: { 'zh-CN': title },
+    title,
+    custom_properties: { format: 'mp3', size: 120000 },
+    ti_items: flags.map((f, i) => ({
+      ti_format: f === 'ogg' ? 'ogg' : 'mp3',
+      ti_file_flag: f,
+      ti_size: 100000 + i,
+      ti_is_source_file: f === 'source',
+      ti_storages: [`https://example.com/audio/${title}/${f}.mp3`],
+    })),
+  };
+}
+
+const audioPick = lib.pickAudioUrl(mockAudioItem('Unit 1', ['href', 'href-clip', 'source']).ti_items);
+assert('pickAudioUrl: prefers source file', !!audioPick && audioPick.url.includes('/source.mp3'));
+
+const audioPick2 = lib.pickAudioUrl(mockAudioItem('Unit 2', ['href', 'href-clip']).ti_items);
+assert('pickAudioUrl: falls back to href (dedupes clip)', !!audioPick2 && audioPick2.url.includes('/href.mp3'));
+
+const audioPick3 = lib.pickAudioUrl(mockAudioItem('Unit 3', ['href-clip']).ti_items);
+assert('pickAudioUrl: skips clip-only by default', audioPick3 === null);
+
+const audioPick4 = lib.pickAudioUrl(mockAudioItem('Unit 3', ['href-clip']).ti_items, { includeClips: true });
+assert('pickAudioUrl: includeClips keeps clip', !!audioPick4 && audioPick4.url.includes('href-clip'));
+
+assert('pickAudioUrl: null input returns null', lib.pickAudioUrl(null) === null);
+
+const audioTracks = lib.parseAudioTracks([
+  mockAudioItem('Unit 1', ['href', 'href-clip', 'source']),
+  mockAudioItem('Unit 1', ['href', 'href-clip', 'source']), // same URL → deduped
+  mockAudioItem('Unit 2', ['href']),
+]);
+assert('parseAudioTracks: dedupes identical URLs', audioTracks.length === 2);
+assert('parseAudioTracks: names carry 音频 tag', audioTracks.every((t) => t.name.includes('[音频]')));
+assert('parseAudioTracks: mp3 format', audioTracks.every((t) => t.format === 'mp3'));
+
+assert('parseAudioTracks: null input returns []', lib.parseAudioTracks(null).length === 0);
 
 // Note: HLS (m3u8) video download has been DISABLED in v1.3.0 because
 // the platform's AES-128 key server is behind Huawei WAF JS Challenge

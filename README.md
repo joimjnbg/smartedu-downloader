@@ -8,7 +8,7 @@
 
 ## 功能
 
-- **支持多种资源类型** — 教材、同步课程、基础作业、课件、一堂课、实验课、精品课、专题课程
+- **支持多种资源类型** — 教材（含配套听力音频）、课程教学目录、同步课程、基础作业、课件、一堂课、实验课、精品课、专题课程
 - **自动发现所有资源** — 自动识别 API 返回的所有资源分类，无需硬编码白名单
 - **树形文件选择** — 自动解析资源结构，勾选需要下载的文件
 - **并发批量下载** — 保持原目录结构，同时下载多个文件（可调 1/2/4/8 路并发）
@@ -167,7 +167,9 @@ smartedu-downloader/
 
 | URL 路径 | 类型 | 识别的参数 | API 端点 |
 |---------|------|-----------|---------|
-| `/tchMaterial/detail` | 教材 | `contentId` | `s-file-1/tch_material/details` |
+| `/tchMaterial/detail` | 教材（含配套音频） | `contentId` | `s-file-1/tch_material/details` + `ndrs/resources/<id>/relation_audios.json` |
+| `/syncClassroom`（目录链接） | 课程教学目录 | `defaultTag` | national_lesson 课程目录 → trees + parts → 课程活动详情 |
+| `/tchMaterial`（目录链接） | 教材目录 | `defaultTag` | 教材目录 → 逐本解析（含音频） |
 | `/syncClassroom/classActivity` | 课程活动 | `activityId` | `s-file-2/national_lesson/resources/details` |
 | `/syncClassroom/prepare/detail` | 课件 | `resourceId` | `s-file-2/prepare_sub_type/resources/details` |
 | `/syncClassroom/prepare/detail` | 一堂课 | `lessonId` | `s-file-1/prepare_lesson/resources/details` |

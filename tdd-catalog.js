@@ -1,7 +1,9 @@
 const assert = require('assert');
 const {
   CATALOG_VERSION_URL,
+  SYNC_CLASSROOM_VERSION_URL,
   parseCatalogUrl,
+  matchTags,
   fetchAllBooks,
   filterByTagIds,
   buildTree,
@@ -44,7 +46,12 @@ const books = [
 
 ok('parseCatalogUrl: 标准目录链接', () => {
   const r = parseCatalogUrl('https://basic.smartedu.cn/tchMaterial?defaultTag=s-x%2Fk-yw%2Fv-t%2Fg-1');
-  assert.deepStrictEqual(r, { tagIds: ['s-x', 'k-yw', 'v-t', 'g-1'] });
+  assert.deepStrictEqual(r, { kind: 'textbook', tagIds: ['s-x', 'k-yw', 'v-t', 'g-1'] });
+});
+
+ok('parseCatalogUrl: syncClassroom 目录链接', () => {
+  const r = parseCatalogUrl('https://basic.smartedu.cn/syncClassroom?defaultTag=s-x%2Fk-yw%2Fv-t');
+  assert.deepStrictEqual(r, { kind: 'syncClassroom', tagIds: ['s-x', 'k-yw', 'v-t'] });
 });
 
 ok('parseCatalogUrl: 未编码斜杠', () => {
@@ -196,6 +203,15 @@ ok('searchBooks: 空查询返回空', () => {
 
 ok('searchBooks: 无匹配返回空', () => {
   assert.strictEqual(searchBooks(books, '不存在的书').length, 0);
+});
+
+ok('matchTags: 丢弃书库中不存在的 tag（如 syncClassroom 专属新旧教材 tag）', () => {
+  assert.deepStrictEqual(matchTags(books, ['s-x', 'k-yw', 'no-such-tag']), ['s-x', 'k-yw']);
+  assert.deepStrictEqual(matchTags(books, []), []);
+});
+
+ok('SYNC_CLASSROOM_VERSION_URL: national_lesson 课程目录版本地址', () => {
+  assert.ok(SYNC_CLASSROOM_VERSION_URL.includes('national_lesson/teachingmaterials/version/data_version.json'));
 });
 
 console.log(`\ncatalog: ${passed} passed`);
