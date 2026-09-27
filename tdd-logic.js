@@ -403,10 +403,10 @@ function mockAudioItem(title, flags) {
 }
 
 const audioPick = lib.pickAudioUrl(mockAudioItem('Unit 1', ['href', 'href-clip', 'source']).ti_items);
-assert('pickAudioUrl: prefers source file', !!audioPick && audioPick.url.includes('/source.mp3'));
+assert('pickAudioUrl: prefers href (source is 403 even with Token)', !!audioPick && audioPick.url.includes('/href.mp3'));
 
 const audioPick2 = lib.pickAudioUrl(mockAudioItem('Unit 2', ['href', 'href-clip']).ti_items);
-assert('pickAudioUrl: falls back to href (dedupes clip)', !!audioPick2 && audioPick2.url.includes('/href.mp3'));
+assert('pickAudioUrl: dedupes clip, picks href', !!audioPick2 && audioPick2.url.includes('/href.mp3'));
 
 const audioPick3 = lib.pickAudioUrl(mockAudioItem('Unit 3', ['href-clip']).ti_items);
 assert('pickAudioUrl: skips clip-only by default', audioPick3 === null);

@@ -198,9 +198,15 @@ function extractAllUrls(tiItems) {
 // ─── relation_audios items (tchMaterial audio tracks) ───────────────────────
 // Each entry has resource_type_code 'listening', custom_properties.format 'mp3',
 // and ti_items: mp3/href, mp3/href-clip, ogg/href-ogg, ogg/href-ogg-clip,
-// mp3/source (ti_is_source_file). Prefer the source file, else the href mp3.
-// Dedupes href vs href-clip (same recording, clipped variant) by default:
-// pass { includeClips: true } to keep both.
+// mp3/source (ti_is_source_file).
+//
+// Verified 2026-09-27 with the reporter's Token against the real CDN:
+//   - mp3/href (+href-clip, +ogg variants) → HTTP 200 with plain X-ND-AUTH
+//   - mp3/source → HTTP 403 AccessDenied even WITH a valid Token (the web
+//     page fetches it through the UC SDK per-URL signature instead).
+// So prefer the transcode href, never the source file. Dedupes href vs
+// href-clip (same recording, clipped variant) by default: pass
+// { includeClips: true } to keep both.
 function pickAudioUrl(tiItems, opts) {
   const includeClips = !!(opts && opts.includeClips);
   if (!tiItems) return null;
@@ -209,19 +215,14 @@ function pickAudioUrl(tiItems, opts) {
     if (t.ti_format !== 'mp3') continue;
     if (!byFlag[t.ti_file_flag]) byFlag[t.ti_file_flag] = t;
   }
-  const src = byFlag['source'];
-  if (src) {
-    const url = getStorageUrl(src);
-    if (url) return { url, format: 'mp3' };
-  }
   const main = byFlag['href'];
   if (main) {
     const url = getStorageUrl(main);
-    if (url) return { url, format: 'mp3' };
+    if (url) return { url, format: 'mp3', size: main.ti_size || 0 };
   }
   if (includeClips && byFlag['href-clip']) {
     const url = getStorageUrl(byFlag['href-clip']);
-    if (url) return { url, format: 'mp3' };
+    if (url) return { url, format: 'mp3', size: byFlag['href-clip'].ti_size || 0 };
   }
   return null;
 }
@@ -240,9 +241,7 @@ function parseAudioTracks(audioItems, opts) {
     const cn = (item.global_title && item.global_title['zh-CN']) || '';
     const st = item.title || '';
     const base = cn ? (st && st !== cn ? `${cn} - ${st}` : cn) : (st || '未命名');
-    const cp = item.custom_properties || {};
-    const size = cp.size || 0;
-    out.push(makeFileNode(`${sanitize(base)}[音频]`, 'mp3', info.format, info.url, size));
+    out.push(makeFileNode(`${sanitize(base)}[音频]`, 'mp3', info.format, info.url, info.size || 0));
   }
   return out;
 }
